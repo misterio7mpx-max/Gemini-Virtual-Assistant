@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini Voice Control (Ver 20.90 - UI Polish Mode)
+// @name         Gemini Voice Control (Ver 22.10 - Ultimate Polish & Delays)
 // @namespace    http://tampermonkey.net/
-// @version      20.90
-// @description  リソース表示の余白調整、マイクバーの細幅化、設定ボタン背景の黒帯化などレイアウトの最適化。
+// @version      22.10
+// @description  中断ワード、入力確定ディレイ(息継ぎ待ち)、読み上げ区切り文字数設定、各発話の個別ディレイ
 // @author       AI Assistant
 // @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
@@ -12,6 +12,9 @@
 (function() {
     'use strict';
 
+    // =====================================================================
+    // 1. Trusted Types Policy
+    // =====================================================================
     if (window.trustedTypes && window.trustedTypes.createPolicy) {
         if (!window.trustedTypes.defaultPolicy) {
             window.trustedTypes.createPolicy('default', {
@@ -21,154 +24,329 @@
     }
 
     // =====================================================================
-    // 2. Settings Manager
+    // 2. Class: VoiceSettings
     // =====================================================================
-    const Settings = {
-        data: {},
-        bgData: {},
-        defaultData: {
-            volume: 1.0, beepVolume: 0.5, speed: 1.0, pitch: 0.0, intonation: 1.0, selectedSpeakerId: 61,
-            pipWidth: 336, pipHeight: 600, savedPipWidth: 336, savedPipHeight: 600,
-            bgColor: '#009900', lipSyncThreshold: 15,
-            autoSleepTime: 180, hotModeDuration: 120,
-            speed_IDLE_1: 0.5, speed_IDLE_2: 0.5,
-            speed_BUSY_1: 0.5, speed_BUSY_2: 0.5, speed_BUSY_3: 0.5,
-            speed_STOPPED_1: 0.5, speed_STOPPED_2: 0.5,
-            speed_SEARCHING_1: 0.5, speed_SEARCHING_2: 0.5,
-            speed_LISTENING_1: 0.5, speed_LISTENING_2: 0.5,
-            speed_BLOCKED_1: 0.5, speed_BLOCKED_2: 0.5,
+    class VoiceSettings {
+        constructor() {
+            this.data = {};
+            this.bgData = {};
+            this.defaultData = {
+                baseUrl: "http://localhost:8000/",
+                bgColor: '#000032',
+                hotModeDuration: 60,
+                autoSleepTime: 60,
+                volume: 1.0,
+                beepVolume: 1.5,
+                speed: 1.1,
+                pitch: 0.1,
+                intonation: 1.5,
+                lipSyncThreshold: 20,
 
-            wakeWord: "うさぎちゃん", exitWord: "ありがとう", sleepWord: "おやすみ",
-            wakeWordReply: "はい、なんです？", exitReply: "どういたしまして。", sleepReply: "おやすみなさい。",
-            startupMessage: "システムを起動しました。", finishedThinkingMessage: "お待たせしました！", resumeMessage: "おはようございます。",
+                // 【追加】案B・案Cの設定値
+                readChunkLength: 50,
+                speechEndDelay: 1.0,
 
-            reactionSpeechSurprised_1: "びっくりした！", reactionSpeechSurprised_2: "", reactionSpeechSurprised_3: "",
-            reactionSpeechSad_1: "しゅん……", reactionSpeechSad_2: "", reactionSpeechSad_3: "",
-            reactionSpeechAngry_1: "もーっ！", reactionSpeechAngry_2: "", reactionSpeechAngry_3: "",
-            reactionDuration: 2.0,
+                selectedSpeakerId: 61,
+                pipWidth: 336, pipHeight: 600,
+                savedPipWidth: 336, savedPipHeight: 600,
+                savedPipLeft: undefined, savedPipTop: undefined,
+                savedChatOffset: 0,
 
-            style_wakeWordReply: "default", style_exitReply: "default", style_sleepReply: "default",
-            style_startupMessage: "default", style_finishedThinkingMessage: "default", style_resumeMessage: "default",
-            style_reactionSpeechSurprised: "default", style_reactionSpeechSad: "default", style_reactionSpeechAngry: "default",
+                heartSize: 84,
+                heartSizeRandom: 30,
+                heartPosRandom: 60,
 
-            txt_IDLE: "システム待機中", txt_BUSY: "思考中...", txt_STOPPED: "システム停止中",
-            txt_SEARCHING: "接続確認中...", txt_LISTENING: "聞き取り中...", txt_BLOCKED: "困惑中...",
-            txt_HOTMODE: "受付中", txt_SPEAKING: "発話中...",
-            icon_IDLE: "🐰", icon_BUSY: "🔄", icon_STOPPED: "💤",
-            icon_SEARCHING: "📡", icon_LISTENING: "👂", icon_BLOCKED: "😰",
-            icon_HOTMODE: "🔥", icon_SPEAKING: "🎵"
-        },
+                fontSize_clock: 18,
+                fontSize_status: 24,
+                fontSize_micStatus: 14,
+                fontSize_transcript: 14,
+                icon_transcript: "🗣️",
+
+                micMsg_WAITING: "👂 「{wakeWord}」を待機中...",
+                micMsg_HOTMODE: "🎤 用件をどうぞ！",
+                micMsg_MUTED: "🔕 マイク一時停止",
+
+                speed_IDLE_1: 0.5, speed_IDLE_2: 0.5,
+                speed_BUSY_1: 0.5, speed_BUSY_2: 0.5, speed_BUSY_3: 0.5,
+                speed_STOPPED_1: 0.5, speed_STOPPED_2: 0.5,
+                speed_SEARCHING_1: 0.5, speed_SEARCHING_2: 0.5,
+                speed_LISTENING_1: 0.5, speed_LISTENING_2: 0.5,
+                speed_BLOCKED_1: 0.5, speed_BLOCKED_2: 0.5,
+
+                wakeWord: "うさぎちゃん", matchMode_wake: "PARTIAL",
+                exitWord: "ありがとう", matchMode_exit: "EXACT",
+                sleepWord: "おやすみ", matchMode_sleep: "EXACT",
+                sendWord: "送信して", matchMode_send: "EXACT",
+                clearWord: "クリア", matchMode_clear: "EXACT",
+                waitWord: "ちょっと待って", matchMode_wait: "EXACT",
+                stopWord: "ストップ", matchMode_stop: "EXACT", // 【追加】中断ワード
+
+                wakeWordReply: "はい、なんです？", exitReply: "どういたしまして。", sleepReply: "おやすみなさい。",
+                clearReply: "入力を取り消しました。", waitReply: "はい、お待ちしています。",
+                startupMessage: "システムを起動しました。", finishedThinkingMessage: "お待たせしました！", resumeMessage: "おはようございます。",
+
+                // 各発話のディレイ初期値
+                delay_wakeWordReply: 0.0, delay_exitReply: 0.0, delay_sleepReply: 0.0,
+                delay_clearReply: 0.0, delay_waitReply: 0.0, delay_startupMessage: 0.0,
+                delay_finishedThinkingMessage: 0.0, delay_resumeMessage: 0.0,
+
+                reactionSpeechSurprised_1: "びっくりした！", reactionSpeechSurprised_2: "", reactionSpeechSurprised_3: "",
+                reactionSpeechSad_1: "しゅん……", reactionSpeechSad_2: "", reactionSpeechSad_3: "",
+                reactionSpeechAngry_1: "もーっ！", reactionSpeechAngry_2: "", reactionSpeechAngry_3: "",
+                reactionDuration: 2.0,
+
+                style_wakeWordReply: "default", style_exitReply: "default", style_sleepReply: "default",
+                style_clearReply: "default", style_waitReply: "default",
+                style_startupMessage: "default", style_finishedThinkingMessage: "default", style_resumeMessage: "default",
+                style_reactionSpeechSurprised: "default", style_reactionSpeechSad: "default", style_reactionSpeechAngry: "default",
+
+                txt_IDLE: "システム待機中", txt_BUSY: "思考中...", txt_STOPPED: "システム停止中",
+                txt_SEARCHING: "接続確認中...", txt_LISTENING: "聞き取り中...", txt_BLOCKED: "困惑中...",
+                txt_HOTMODE: "受付中", txt_SPEAKING: "発話中...",
+                icon_IDLE: "🐰", icon_BUSY: "🔄", icon_STOPPED: "💤",
+                icon_SEARCHING: "📡", icon_LISTENING: "👂", icon_BLOCKED: "😰",
+                icon_HOTMODE: "🔥", icon_SPEAKING: "🎵"
+            };
+        }
+
         init() {
-            const saved = JSON.parse(localStorage.getItem('gemini_voice_settings')) || {};
+            const defaultBgMap = {
+                'IDLE_1': '1idle1.png', 'IDLE_2': '1idle2.png',
+                'BUSY_1': '2busy1.png', 'BUSY_2': '2busy2.png', 'BUSY_3': '2busy3.png',
+                'SPEAKING_1': '3speak1.png', 'SPEAKING_2': '3speak2.png',
+                'STOPPED_1': '4stop1.png', 'STOPPED_2': '4stop2.png',
+                'SEARCHING_1': '5search1.png', 'SEARCHING_2': '5search2.png',
+                'LISTENING_1': '6lis1.png', 'LISTENING_2': '6lis2.png',
+                'BLOCKED_1': '7block1.png', 'BLOCKED_2': '7block2.png',
+                'REACTION_SURPRISED_1': 'R11.png', 'REACTION_SURPRISED_2': 'R12.png', 'REACTION_SURPRISED_3': 'R13.png',
+                'REACTION_SAD_1': 'R21.png', 'REACTION_SAD_2': 'R22.png', 'REACTION_SAD_3': 'R23.png',
+                'REACTION_ANGRY_1': 'R31.png', 'REACTION_ANGRY_2': 'R32.png', 'REACTION_ANGRY_3': 'R33.png',
+                'REACTION_WAKEUP_1': 'R41.png', 'REACTION_WAKEUP_2': 'R42.png', 'REACTION_WAKEUP_3': 'R43.png'
+            };
+
+            let saved = {};
+            try { saved = JSON.parse(localStorage.getItem('gemini_voice_settings')) || {}; } catch (e) {}
+
             this.data = { ...this.defaultData, ...saved };
-            const bgKeys = ['IDLE_1', 'IDLE_2', 'BUSY_1', 'BUSY_2', 'BUSY_3', 'SPEAKING_1', 'SPEAKING_2', 'STOPPED_1', 'STOPPED_2',
-                            'SEARCHING_1', 'SEARCHING_2', 'LISTENING_1', 'LISTENING_2', 'BLOCKED_1', 'BLOCKED_2',
-                            'REACTION_SURPRISED_1', 'REACTION_SURPRISED_2', 'REACTION_SURPRISED_3',
-                            'REACTION_SAD_1', 'REACTION_SAD_2', 'REACTION_SAD_3',
-                            'REACTION_ANGRY_1', 'REACTION_ANGRY_2', 'REACTION_ANGRY_3',
-                            'REACTION_WAKEUP_1', 'REACTION_WAKEUP_2', 'REACTION_WAKEUP_3'];
-            bgKeys.forEach(key => { this.bgData[key] = localStorage.getItem(`gemini_voice_bg_${key.toLowerCase()}`) || ""; });
-        },
-        save() { try { localStorage.setItem('gemini_voice_settings', JSON.stringify(this.data)); } catch(e) {} },
+
+            const bgKeys = Object.keys(defaultBgMap);
+            bgKeys.forEach(key => {
+                const savedUrl = localStorage.getItem(`gemini_voice_bg_${key.toLowerCase()}`);
+                if (savedUrl) {
+                    this.bgData[key] = savedUrl;
+                } else {
+                    this.bgData[key] = defaultBgMap[key];
+                }
+            });
+        }
+
+        save() { try { localStorage.setItem('gemini_voice_settings', JSON.stringify(this.data)); } catch(e) {} }
         saveBg(key, url) { this.bgData[key] = url; try { localStorage.setItem(`gemini_voice_bg_${key.toLowerCase()}`, url); } catch(e) {} }
-    };
-
-    const State = {
-        current: "IDLE", isSpeaking: false, isRecognizing: false, isGenerating: false,
-        generatingTextLength: 0, autoRestart: false, hotModeTimeLeft: 0, autoSleepTimeLeft: 180,
-        animStep: 0, activeReaction: null, activeReactionIndex: 1, reactionTimer: null, animTimeout: null, lastAnimStateKey: null,
-        currentFrameSpeed: 0.5, isSystemReady: false, spokenSignatures: new Set()
-    };
+    }
 
     // =====================================================================
-    // 4. Audio Manager
+    // 3. Class: VoiceState
     // =====================================================================
-    const AudioModule = {
-        ctx: null, analyser: null, micAnalyser: null, micStream: null, typingInterval: null,
+    class VoiceState {
+        constructor() {
+            this.current = "IDLE";
+            this.isSpeaking = false;
+            this.isRecognizing = false;
+            this.isGenerating = false;
+            this.isTestingImages = false;
+            this.generatingTextLength = 0;
+            this.autoRestart = false;
+            this.hotModeTimeLeft = 0;
+            this.autoSleepTimeLeft = 180;
+            this.animStep = 0;
+            this.activeReaction = null;
+            this.activeReactionIndex = 1;
+            this.reactionTimer = null;
+            this.animTimeout = null;
+            this.lastAnimStateKey = null;
+            this.currentFrameSpeed = 0.5;
+            this.isSystemReady = false;
+            this.spokenSignatures = new Set();
+        }
+    }
+
+    // =====================================================================
+    // 4. Class: VoiceAudio
+    // =====================================================================
+    class VoiceAudio {
+        constructor(app) {
+            this.app = app;
+            this.ctx = null;
+            this.analyser = null;
+            this.micAnalyser = null;
+            this.micStream = null;
+            this.typingInterval = null;
+        }
+
         initCtx() {
             if (!this.ctx || this.ctx.state === 'closed') {
                 this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-                this.analyser = this.ctx.createAnalyser(); this.analyser.fftSize = 256;
-                this.analyser.smoothingTimeConstant = 0.5; this.analyser.connect(this.ctx.destination);
+                this.analyser = this.ctx.createAnalyser();
+                this.analyser.fftSize = 256;
+                this.analyser.smoothingTimeConstant = 0.5;
+                this.analyser.connect(this.ctx.destination);
+            }
+            if (this.ctx && this.ctx.state === 'suspended') {
+                this.ctx.resume();
             }
             return this.ctx;
-        },
+        }
+
         async setupMic() {
-            if (!UI.pipWindow) return;
             try {
                 this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-                const ctx = this.initCtx(); const source = ctx.createMediaStreamSource(this.micStream);
-                this.micAnalyser = ctx.createAnalyser(); this.micAnalyser.fftSize = 256; this.micAnalyser.smoothingTimeConstant = 0.8;
-                source.connect(this.micAnalyser); UI.startMicVisualizer();
+                const ctx = this.initCtx();
+                const source = ctx.createMediaStreamSource(this.micStream);
+                this.micAnalyser = ctx.createAnalyser();
+                this.micAnalyser.fftSize = 256;
+                this.micAnalyser.smoothingTimeConstant = 0.8;
+                source.connect(this.micAnalyser);
+                this.app.ui.startMicVisualizer();
             } catch (e) {}
-        },
-        stopMic() { if (this.micStream) { this.micStream.getTracks().forEach(t => t.stop()); this.micStream = null; this.micAnalyser = null; } },
+        }
+
+        stopMic() {
+            if (this.micStream) {
+                this.micStream.getTracks().forEach(t => t.stop());
+                this.micStream = null;
+                this.micAnalyser = null;
+            }
+        }
+
         playTypingTick(isHeavy = false) {
-            const ctx = this.initCtx(); if(ctx.state === 'suspended') return;
-            const osc = ctx.createOscillator(); const gain = ctx.createGain(); const filter = ctx.createBiquadFilter();
-            osc.type = isHeavy ? 'sawtooth' : 'square'; filter.type = 'bandpass'; filter.frequency.value = isHeavy ? (1200 + Math.random() * 600) : (800 + Math.random() * 400);
-            gain.gain.setValueAtTime(Settings.data.beepVolume * (isHeavy ? 0.030 : 0.025), ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + (isHeavy ? 0.03 : 0.05));
-            osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + (isHeavy ? 0.03 : 0.05));
-        },
-        startTypingSound() { if (this.typingInterval) return; this.typingInterval = setInterval(() => { if (State.isGenerating) { const isHeavy = State.generatingTextLength > 300; if (Math.random() < (isHeavy ? 0.6 : 0.3)) this.playTypingTick(isHeavy); } }, 80); },
-        stopTypingSound() { clearInterval(this.typingInterval); this.typingInterval = null; },
-        playBeep() { const ctx = this.initCtx(); if(ctx.state === 'suspended') return; const playTone = (f, s, d) => { const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = 'sine'; o.frequency.setValueAtTime(f, s); g.gain.setValueAtTime(Settings.data.beepVolume * 0.2, s); g.gain.exponentialRampToValueAtTime(0.01, s + d); o.connect(g); g.connect(ctx.destination); o.start(s); o.stop(s + d); }; playTone(880, ctx.currentTime, 0.1); playTone(1046, ctx.currentTime + 0.1, 0.1); },
-        playTapSound() { const ctx = this.initCtx(); if(ctx.state === 'suspended') return; const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.type = 'sine'; osc.frequency.setValueAtTime(600, ctx.currentTime); osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.1); gain.gain.setValueAtTime(0, ctx.currentTime); gain.gain.linearRampToValueAtTime(Settings.data.beepVolume * 0.3, ctx.currentTime + 0.02); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15); osc.connect(gain); gain.connect(ctx.destination); osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15); }
-    };
+            const ctx = this.initCtx();
+            if(ctx.state === 'suspended') return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            const filter = ctx.createBiquadFilter();
+            osc.type = isHeavy ? 'sawtooth' : 'square';
+            filter.type = 'bandpass';
+            filter.frequency.value = isHeavy ? (1200 + Math.random() * 600) : (800 + Math.random() * 400);
+            gain.gain.setValueAtTime(this.app.settings.data.beepVolume * (isHeavy ? 0.030 : 0.025), ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + (isHeavy ? 0.03 : 0.05));
+            osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+            osc.start(); osc.stop(ctx.currentTime + (isHeavy ? 0.03 : 0.05));
+        }
+
+        startTypingSound() {
+            if (this.typingInterval) return;
+            this.typingInterval = setInterval(() => {
+                if (this.app.state.isGenerating) {
+                    const isHeavy = this.app.state.generatingTextLength > 300;
+                    if (Math.random() < (isHeavy ? 0.6 : 0.3)) this.playTypingTick(isHeavy);
+                }
+            }, 80);
+        }
+
+        stopTypingSound() { clearInterval(this.typingInterval); this.typingInterval = null; }
+
+        playBeep() {
+            const ctx = this.initCtx();
+            if(ctx.state === 'suspended') return;
+            const playTone = (f, s, d) => {
+                const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = 'sine';
+                o.frequency.setValueAtTime(f, s);
+                g.gain.setValueAtTime(this.app.settings.data.beepVolume * 0.2, s);
+                g.gain.exponentialRampToValueAtTime(0.01, s + d);
+                o.connect(g); g.connect(ctx.destination); o.start(s); o.stop(s + d);
+            };
+            playTone(880, ctx.currentTime, 0.1); playTone(1046, ctx.currentTime + 0.1, 0.1);
+        }
+
+        playTapSound() {
+            const ctx = this.initCtx();
+            if(ctx.state === 'suspended') return;
+            const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.type = 'sine';
+            osc.frequency.setValueAtTime(600, ctx.currentTime); osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0, ctx.currentTime); gain.gain.linearRampToValueAtTime(this.app.settings.data.beepVolume * 0.3, ctx.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+            osc.connect(gain); gain.connect(ctx.destination); osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15);
+        }
+
+        playAppendTick() {
+            const ctx = this.initCtx();
+            if(ctx.state === 'suspended') return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(2500, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(1500, ctx.currentTime + 0.05);
+            gain.gain.setValueAtTime(this.app.settings.data.beepVolume * 0.08, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.05);
+        }
+    }
 
     // =====================================================================
-    // 5. TTS Manager
+    // 5. Class: VoiceTTS
     // =====================================================================
-    const TTS = {
-        queue: [], currentSource: null, audioCache: {},
-        cleanText(text) { if (!text) return ""; return text.replace(/\*?\]/gi, "").replace(/[#*`_~>|\-「」『』（）()【】\[\]"']/g, "").trim(); },
+    class VoiceTTS {
+        constructor(app) {
+            this.app = app; this.queue = []; this.currentSource = null; this.audioCache = {};
+        }
+
+        cleanText(text) {
+            if (!text) return "";
+            return text.replace(/\*?\]/gi, "").replace(/[#*`_~>|\-「」『』（）()【】\[\]"']/g, "").trim();
+        }
+
         getParamsForKey(key) {
-            let p = Settings.data.pitch; let s = Settings.data.speed; let i = Settings.data.intonation; let sid = Settings.data.selectedSpeakerId;
+            const sd = this.app.settings.data;
+            let p = sd.pitch; let s = sd.speed; let i = sd.intonation; let sid = sd.selectedSpeakerId; let d = 0;
             if (key) {
-                if (Settings.data[`pitch_${key}`] !== undefined) p = parseFloat(Settings.data[`pitch_${key}`]);
-                if (Settings.data[`speed_${key}`] !== undefined) s = parseFloat(Settings.data[`speed_${key}`]);
-                if (Settings.data[`intonation_${key}`] !== undefined) i = parseFloat(Settings.data[`intonation_${key}`]);
-                if (Settings.data[`style_${key}`] && Settings.data[`style_${key}`] !== "default") sid = parseInt(Settings.data[`style_${key}`], 10);
+                if (sd[`pitch_${key}`] !== undefined) p = parseFloat(sd[`pitch_${key}`]);
+                if (sd[`speed_${key}`] !== undefined) s = parseFloat(sd[`speed_${key}`]);
+                if (sd[`intonation_${key}`] !== undefined) i = parseFloat(sd[`intonation_${key}`]);
+                if (sd[`style_${key}`] && sd[`style_${key}`] !== "default") sid = parseInt(sd[`style_${key}`], 10);
+                if (sd[`delay_${key}`] !== undefined) d = parseFloat(sd[`delay_${key}`]); // 【追加】ディレイの取得
             }
-            return { pitch: p, speed: s, intonation: i, sid: sid };
-        },
+            return { pitch: p, speed: s, intonation: i, sid: sid, delay: d };
+        }
+
         async preloadCache() {
+            const sd = this.app.settings.data;
             const targets = [
-                { key: "wakeWordReply", text: Settings.data.wakeWordReply },
-                { key: "startupMessage", text: Settings.data.startupMessage },
-                { key: "finishedThinkingMessage", text: Settings.data.finishedThinkingMessage },
-                { key: "resumeMessage", text: Settings.data.resumeMessage },
-                { key: "exitReply", text: Settings.data.exitReply },
-                { key: "sleepReply", text: Settings.data.sleepReply }
+                { key: "wakeWordReply", text: sd.wakeWordReply }, { key: "startupMessage", text: sd.startupMessage },
+                { key: "finishedThinkingMessage", text: sd.finishedThinkingMessage }, { key: "resumeMessage", text: sd.resumeMessage },
+                { key: "exitReply", text: sd.exitReply }, { key: "sleepReply", text: sd.sleepReply },
+                { key: "clearReply", text: sd.clearReply }, { key: "waitReply", text: sd.waitReply }
             ];
             ["reactionSpeechSurprised", "reactionSpeechSad", "reactionSpeechAngry"].forEach(baseKey => {
-                for(let i=1; i<=3; i++) {
-                    if (Settings.data[`${baseKey}_${i}`]) targets.push({ key: baseKey, text: Settings.data[`${baseKey}_${i}`] });
-                }
+                for(let i=1; i<=3; i++) { if (sd[`${baseKey}_${i}`]) targets.push({ key: baseKey, text: sd[`${baseKey}_${i}`] }); }
             });
+
             for (let item of targets) {
-                const t = this.cleanText(item.text); if (t.length < 2) continue;
+                const t = this.cleanText(item.text);
+                if (t.length < 2) continue;
                 const params = this.getParamsForKey(item.key);
                 const cacheKey = `${t}_${params.pitch}_${params.sid}_${params.speed}_${params.intonation}`;
                 if (this.audioCache[cacheKey]) continue;
                 try { this.audioCache[cacheKey] = await this.generateAudioBuffer(t, params); } catch(e) {}
             }
-        },
-        clearCache() { this.audioCache = {}; if (AudioModule.ctx) this.preloadCache(); },
+        }
+
+        clearCache() { this.audioCache = {}; if (this.app.audio.ctx) this.preloadCache(); }
+
         async generateAudioBuffer(text, params) {
-            const ctx = AudioModule.initCtx();
+            const ctx = this.app.audio.initCtx();
             const queryRes = await new Promise((res, rej) => {
                 GM_xmlhttpRequest({
                     method: "POST", url: `http://localhost:50021/audio_query?speaker=${params.sid}&text=${encodeURIComponent(text)}`,
                     onload: (r) => {
                         let d = JSON.parse(r.responseText);
-                        d.volumeScale = Settings.data.volume; d.speedScale = params.speed;
+                        d.volumeScale = this.app.settings.data.volume; d.speedScale = params.speed;
                         d.pitchScale = params.pitch; d.intonationScale = params.intonation;
                         d.prePhonemeLength = 0; d.postPhonemeLength = 0; res(d);
-                    },
-                    onerror: () => rej()
+                    }, onerror: () => rej()
                 });
             });
+
             const audioData = await new Promise((res) => {
                 GM_xmlhttpRequest({
                     method: "POST", url: `http://localhost:50021/synthesis?speaker=${params.sid}`,
@@ -177,145 +355,381 @@
                 });
             });
             return await ctx.decodeAudioData(audioData);
-        },
+        }
+
         enqueue(text, configKey = null) {
             const t = this.cleanText(text); if (t.length < 1) return;
             const params = this.getParamsForKey(configKey);
-            this.queue.push({ text: t, params: params });
-            this.processQueue();
-        },
+            this.queue.push({ text: t, params: params }); this.processQueue();
+        }
+
         async playInstantly(text, configKey = null) {
             const t = this.cleanText(text); if (t.length < 1) return;
             const params = this.getParamsForKey(configKey);
             const cacheKey = `${t}_${params.pitch}_${params.sid}_${params.speed}_${params.intonation}`;
             try {
-                const ctx = AudioModule.initCtx(); let buffer = this.audioCache[cacheKey];
+                const ctx = this.app.audio.initCtx(); let buffer = this.audioCache[cacheKey];
                 if (!buffer) { buffer = await this.generateAudioBuffer(t, params); this.audioCache[cacheKey] = buffer; }
-                const source = ctx.createBufferSource(); source.buffer = buffer; source.connect(AudioModule.analyser); source.start(0);
+                const source = ctx.createBufferSource(); source.buffer = buffer; source.connect(this.app.audio.analyser); source.start(0);
             } catch (e) {}
-        },
+        }
+
         async processQueue() {
-            if (State.isSpeaking || this.queue.length === 0) return;
-            State.isSpeaking = true; UI.sync();
+            if (this.app.state.isSpeaking || this.queue.length === 0) return;
+            this.app.state.isSpeaking = true; this.app.ui.sync();
+
             const item = this.queue.shift();
             const cacheKey = `${item.text}_${item.params.pitch}_${item.params.sid}_${item.params.speed}_${item.params.intonation}`;
-            if (Speech.recognition && State.isRecognizing) { try { Speech.recognition.stop(); } catch(e){} }
+
+            if (this.app.speech.recognition && this.app.state.isRecognizing) { try { this.app.speech.recognition.stop(); } catch(e){} }
+
+            // 【追加】発話ディレイの適用
+            const delayMs = (item.params.delay || 0) * 1000;
+            if (delayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+
             try {
-                const ctx = AudioModule.initCtx(); let buffer = this.audioCache[cacheKey];
+                const ctx = this.app.audio.initCtx(); let buffer = this.audioCache[cacheKey];
                 if (!buffer) { buffer = await this.generateAudioBuffer(item.text, item.params); this.audioCache[cacheKey] = buffer; }
-                const source = ctx.createBufferSource(); this.currentSource = source; source.buffer = buffer; source.connect(AudioModule.analyser);
-                source.onended = () => { this.currentSource = null; State.isSpeaking = false; UI.sync(); this.processQueue(); };
+                const source = ctx.createBufferSource(); this.currentSource = source; source.buffer = buffer; source.connect(this.app.audio.analyser);
+                source.onended = () => { this.currentSource = null; this.app.state.isSpeaking = false; this.app.ui.sync(); this.processQueue(); };
                 source.start(0);
-            } catch (e) { State.isSpeaking = false; this.currentSource = null; UI.sync(); this.processQueue(); }
-        },
+            } catch (e) { this.app.state.isSpeaking = false; this.currentSource = null; this.app.ui.sync(); this.processQueue(); }
+        }
+
         stop() { this.queue = []; if (this.currentSource) { try { this.currentSource.stop(); } catch(e){} } }
-    };
+    }
 
     // =====================================================================
-    // 6. Speech Recognition
+    // 6. Class: VoiceSpeech
     // =====================================================================
-    const Speech = {
-        recognition: null, visualTimer: null,
+    class VoiceSpeech {
+        constructor(app) {
+            this.app = app;
+            this.recognition = null;
+            this.visualTimer = null;
+            this.speechBuffer = ""; // 【追加】息継ぎ用バッファ
+            this.speechTimeout = null; // 【追加】ディレイタイマー
+            this.shouldSendBuffer = false;
+            this.wasWakeWordUsed = false;
+        }
+
         init() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) return;
+
             this.recognition = new SpeechRecognition();
             this.recognition.lang = 'ja-JP'; this.recognition.interimResults = true; this.recognition.continuous = false;
-            this.recognition.onstart = () => { State.isRecognizing = true; UI.sync(); };
-            this.recognition.onerror = () => { State.isRecognizing = false; };
-            this.recognition.onend = () => { State.isRecognizing = false; UI.sync(); };
+            this.recognition.onstart = () => { this.app.state.isRecognizing = true; this.app.ui.sync(); };
+            this.recognition.onerror = () => { this.app.state.isRecognizing = false; };
+            this.recognition.onend = () => { this.app.state.isRecognizing = false; this.app.ui.sync(); };
+
             this.recognition.onresult = (event) => {
-                if (State.isSpeaking || State.current === "BUSY") return;
-                let transcript = event.results[0][0].transcript.trim();
-                if (event.results[0].isFinal) {
-                    const hasWakeWord = Settings.data.wakeWord && transcript.includes(Settings.data.wakeWord);
-                    const cleanCmd = hasWakeWord ? transcript.replace(Settings.data.wakeWord, "").trim() : transcript;
+                const state = this.app.state; const sd = this.app.settings.data;
 
-                    if (cleanCmd === Settings.data.sleepWord) {
-                        if (Settings.data.sleepReply) TTS.enqueue(Settings.data.sleepReply, "sleepReply");
-                        State.hotModeTimeLeft = 0; State.autoRestart = false; if (this.visualTimer) clearInterval(this.visualTimer);
-                        UI.sync(); return;
+                const checkMatch = (transcript, word, mode) => {
+                    if (!word || word.trim() === "") return { isMatch: false, cleanText: transcript };
+                    const w = word.trim();
+                    if (mode === "EXACT") {
+                        return { isMatch: transcript === w, cleanText: transcript === w ? "" : transcript };
+                    } else {
+                        const isMatch = transcript.includes(w);
+                        return { isMatch, cleanText: isMatch ? transcript.replace(w, "").trim() : transcript };
                     }
-                    if (cleanCmd === Settings.data.exitWord) {
-                        if (Settings.data.exitReply) TTS.enqueue(Settings.data.exitReply, "exitReply");
-                        State.hotModeTimeLeft = 0; if (this.visualTimer) clearInterval(this.visualTimer);
-                        UI.sync(); return;
+                };
+
+                let interim = ""; let final = "";
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) final += event.results[i][0].transcript;
+                    else interim += event.results[i][0].transcript;
+                }
+
+                // 【追加】発話・生成中の中断処理（案B）
+                if (state.isSpeaking || state.current === "BUSY" || state.isGenerating) {
+                    const tFinal = final.trim();
+                    if (tFinal) {
+                        const mStop = checkMatch(tFinal, sd.stopWord, sd.matchMode_stop);
+                        if (mStop.isMatch && sd.stopWord) {
+                            this.app.tts.stop();
+                            state.isGenerating = false;
+                            this.app.audio.playBeep();
+                            // Geminiの生成自体もストップボタンを押して止める
+                            const stopBtn = document.querySelector('button[aria-label*="停止"], .generating-text, [purpose="r-stop-button"]');
+                            if (stopBtn) stopBtn.click();
+                            this.app.ui.sync();
+                        }
+                    }
+                    return; // 中断ワード以外は無視
+                }
+
+                const displayTxt = final || interim;
+                if (this.app.ui.elements.transcriptText && displayTxt.trim() !== "") {
+                    const icon = sd.icon_transcript || "🗣️";
+                    this.app.ui.elements.transcriptText.textContent = `${icon} ` + displayTxt;
+                    this.app.ui.elements.transcriptText.style.textShadow = this.app.ui.getSharpDoubleOutline('#444444');
+                }
+
+                if (final) {
+                    if (this.app.ui.transcriptClearTimer) clearTimeout(this.app.ui.transcriptClearTimer);
+                    this.app.ui.transcriptClearTimer = setTimeout(() => {
+                        if (this.app.ui.elements.transcriptText) this.app.ui.elements.transcriptText.textContent = "";
+                    }, 5000);
+
+                    let t = final.trim();
+
+                    // コマンド判定
+                    const mSleep = checkMatch(t, sd.sleepWord, sd.matchMode_sleep);
+                    if (mSleep.isMatch) {
+                        if (sd.sleepReply) this.app.tts.enqueue(sd.sleepReply, "sleepReply");
+                        state.hotModeTimeLeft = 0; state.autoRestart = false;
+                        if (this.visualTimer) clearInterval(this.visualTimer);
+                        this.app.ui.sync(); return;
                     }
 
-                    if (hasWakeWord) {
-                        this.activateHotMode(); State.autoSleepTimeLeft = Settings.data.autoSleepTime;
-                        if (cleanCmd.length > 0) { this.sendToGemini(cleanCmd); }
-                        else { if(Settings.data.wakeWordReply) TTS.enqueue(Settings.data.wakeWordReply, "wakeWordReply"); }
-                    } else if (State.hotModeTimeLeft > 0) {
-                        this.activateHotMode(); State.autoSleepTimeLeft = Settings.data.autoSleepTime;
-                        this.sendToGemini(transcript);
+                    const mExit = checkMatch(t, sd.exitWord, sd.matchMode_exit);
+                    if (mExit.isMatch) {
+                        if (sd.exitReply) this.app.tts.enqueue(sd.exitReply, "exitReply");
+                        state.hotModeTimeLeft = 0;
+                        if (this.visualTimer) clearInterval(this.visualTimer);
+                        this.app.ui.sync(); return;
                     }
-                    UI.sync();
+
+                    const mClear = checkMatch(t, sd.clearWord, sd.matchMode_clear);
+                    if (mClear.isMatch) {
+                        this.clearGeminiInput();
+                        this.speechBuffer = "";
+                        if (sd.clearReply) this.app.tts.enqueue(sd.clearReply, "clearReply");
+                        this.activateHotMode();
+                        return;
+                    }
+
+                    const mWait = checkMatch(t, sd.waitWord, sd.matchMode_wait);
+                    if (mWait.isMatch) {
+                        this.activateHotMode();
+                        if (sd.waitReply) this.app.tts.enqueue(sd.waitReply, "waitReply");
+                        return;
+                    }
+
+                    let cleanCmd = t;
+                    const mWake = checkMatch(cleanCmd, sd.wakeWord, sd.matchMode_wake);
+                    if (mWake.isMatch) {
+                        this.wasWakeWordUsed = true;
+                        cleanCmd = mWake.cleanText;
+                    }
+
+                    const mSend = checkMatch(cleanCmd, sd.sendWord, sd.matchMode_send);
+                    if (mSend.isMatch && sd.sendWord.trim() !== "") {
+                        this.shouldSendBuffer = true;
+                        cleanCmd = mSend.cleanText;
+                    }
+
+                    this.speechBuffer += cleanCmd;
+
+                    if (this.speechTimeout) clearTimeout(this.speechTimeout);
+
+                    // 【追加】入力確定ディレイ（息継ぎ待ち）の処理（案C）
+                    if (this.shouldSendBuffer || (!sd.sendWord && sd.speechEndDelay === 0)) {
+                        this.flushSpeechBuffer(); // 即時送信
+                    } else {
+                        // ディレイ分だけ待機してバッファを確定
+                        this.speechTimeout = setTimeout(() => {
+                            this.flushSpeechBuffer();
+                        }, (sd.speechEndDelay || 0) * 1000);
+                    }
                 }
             };
-        },
+        }
+
+        // バッファされたテキストをGeminiに送る
+        flushSpeechBuffer() {
+            const text = this.speechBuffer.trim();
+            const send = this.shouldSendBuffer || (!this.app.settings.data.sendWord);
+
+            if (this.wasWakeWordUsed || this.app.state.hotModeTimeLeft > 0) {
+                this.activateHotMode();
+                this.app.state.autoSleepTimeLeft = this.app.settings.data.autoSleepTime;
+
+                if (text.length > 0 || send) {
+                    this.writeToGemini(text, send);
+                } else if (this.wasWakeWordUsed) {
+                    if (this.app.settings.data.wakeWordReply) this.app.tts.enqueue(this.app.settings.data.wakeWordReply, "wakeWordReply");
+                }
+            }
+
+            this.speechBuffer = "";
+            this.shouldSendBuffer = false;
+            this.wasWakeWordUsed = false;
+        }
+
         activateHotMode() {
-            State.hotModeTimeLeft = Settings.data.hotModeDuration;
-            UI.sync();
+            this.app.state.hotModeTimeLeft = this.app.settings.data.hotModeDuration; this.app.ui.sync();
             if (this.visualTimer) clearInterval(this.visualTimer);
             this.visualTimer = setInterval(() => {
-                if (State.hotModeTimeLeft > 0) { State.hotModeTimeLeft--; UI.sync(); }
-                else { clearInterval(this.visualTimer); UI.sync(); }
+                if (this.app.state.hotModeTimeLeft > 0) { this.app.state.hotModeTimeLeft--; this.app.ui.sync(); }
+                else { clearInterval(this.visualTimer); this.app.ui.sync(); }
             }, 1000);
-        },
-        sendToGemini(text) {
+        }
+
+        clearGeminiInput() {
             const inputElem = document.querySelector('.input-area div[contenteditable="true"], rich-textarea > div');
             if (!inputElem) return;
-            document.querySelectorAll('.model-response-text').forEach(el => {
-                el.setAttribute('data-spoken', 'true'); el.dataset.readLength = el.textContent.length.toString();
-                const cleanTxt = GeminiObserver.getCleanTextFast(el); if(cleanTxt) State.spokenSignatures.add(GeminiObserver.getSignature(cleanTxt));
-            });
-            inputElem.focus(); document.execCommand('insertText', false, text);
-            setTimeout(() => { const sendBtn = document.querySelector('button[aria-label*="送信"], .send-button, [purpose="r-send-button"]'); if (sendBtn) sendBtn.click(); }, 500);
+            inputElem.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
         }
-    };
+
+        writeToGemini(text, shouldSend) {
+            const inputElem = document.querySelector('.input-area div[contenteditable="true"], rich-textarea > div');
+            if (!inputElem) return;
+
+            if (text.length > 0) {
+                inputElem.focus();
+                document.execCommand('insertText', false, text + (shouldSend ? "" : " "));
+            }
+
+            if (shouldSend) {
+                document.querySelectorAll('.model-response-text').forEach(el => {
+                    el.setAttribute('data-spoken', 'true'); el.dataset.readLength = el.textContent.length.toString();
+                    const cleanTxt = this.app.observer.getCleanTextFast(el);
+                    if(cleanTxt) this.app.state.spokenSignatures.add(this.app.observer.getSignature(cleanTxt));
+                });
+                setTimeout(() => {
+                    const sendBtn = document.querySelector('button[aria-label*="送信"], .send-button, [purpose="r-send-button"]');
+                    if (sendBtn) sendBtn.click();
+                }, 500);
+            } else if (text.length > 0) {
+                this.app.audio.playAppendTick();
+            }
+        }
+    }
 
     // =====================================================================
-    // 7. Monitor
+    // 7. Class: VoiceImageCache (Blob Generator)
     // =====================================================================
-    const Monitor = {
-        cldPing: '--', ttsPing: '--', cpuLoad: 0, gpuLoad: 0, memUsage: 0, pingTimer: null, resourceTimer: null, sleepTimer: null,
-        start() {
-            this.pingTimer = setInterval(() => {
-                let startCld = performance.now();
-                fetch('https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu4mxK.woff2', { method: 'HEAD', cache: 'no-store' })
-                    .then(() => { this.cldPing = Math.round(performance.now() - startCld); this.updateUI(); }).catch(() => { this.cldPing = Math.round(performance.now() - startCld); this.updateUI(); });
-                let startTts = performance.now();
-                GM_xmlhttpRequest({ method: "GET", url: "http://localhost:50021/version", onload: () => { this.ttsPing = Math.round(performance.now() - startTts); this.updateUI(); }, onerror: () => { this.ttsPing = 'ERR'; this.updateUI(); } });
-            }, 5000);
-            this.resourceTimer = setInterval(() => {
-                let baseCpu = (State.current === "BUSY" || State.isGenerating) ? 45 : (State.isSpeaking || State.isRecognizing ? 25 : 5);
-                this.cpuLoad = Math.max(1, Math.min(100, Math.round(baseCpu + Math.random() * 15))); this.gpuLoad = Math.max(1, Math.min(100, Math.round(this.cpuLoad * 0.6 + Math.random() * 10))); this.memUsage = performance.memory ? Math.round(performance.memory.usedJSHeapSize / (1024 * 1024)) : Math.round(180 + Math.random() * 10);
-                this.updateUI();
-            }, 1000);
-            this.sleepTimer = setInterval(() => {
-                if (!State.autoRestart) return;
-                if (State.isGenerating || State.current === "BUSY" || State.isSpeaking || State.hotModeTimeLeft > 0) { State.autoSleepTimeLeft = Settings.data.autoSleepTime; } else { State.autoSleepTimeLeft--; if (State.autoSleepTimeLeft <= 0) { State.autoRestart = false; State.autoSleepTimeLeft = Settings.data.autoSleepTime; if (Speech.recognition) { try { Speech.recognition.stop(); } catch(e){} } } }
-                UI.sync();
-            }, 1000);
-        },
-        updateUI() { if (UI.elements.pingCldSpan && UI.elements.pingTtsSpan) { UI.elements.pingCldSpan.textContent = `CLD: ${this.cldPing}ms`; UI.elements.pingTtsSpan.textContent = `TTS: ${this.ttsPing}ms`; } if (UI.elements.resourceElement) { UI.elements.resourceElement.textContent = `CPU: ${String(this.cpuLoad).padStart(2,'0')}% | GPU: ${String(this.gpuLoad).padStart(2,'0')}% | MEM: ${this.memUsage}MB`; } }
-    };
+    class VoiceImageCache {
+        constructor(app) {
+            this.app = app;
+            this.blobs = {};
+            this.images = {};
+            this.preloaderDiv = null;
+        }
+
+        initPreloader() {
+            if(!this.preloaderDiv) {
+                this.preloaderDiv = document.createElement('div');
+                this.preloaderDiv.style.cssText = "position:absolute; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none; z-index:-1;";
+                document.body.appendChild(this.preloaderDiv);
+            }
+        }
+
+        async loadSingle(url, forceReload = false) {
+            this.initPreloader();
+            if (!url || url.trim() === "") return url;
+            if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+            if (!forceReload && this.blobs[url]) return this.blobs[url];
+
+            return new Promise(resolve => {
+                const fetchUrl = forceReload ? (url + (url.includes('?') ? '&' : '?') + 't=' + Date.now()) : url;
+                GM_xmlhttpRequest({
+                    method: "GET", url: fetchUrl, responseType: "blob", headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+                    onload: (r) => {
+                        if (r.status === 200) {
+                            const oldUrl = this.blobs[url]; const oldImg = this.images[url];
+                            const bUrl = URL.createObjectURL(r.response); const img = new Image();
+                            img.onload = () => {
+                                this.blobs[url] = bUrl; this.images[url] = img; this.preloaderDiv.appendChild(img);
+                                if (oldUrl && forceReload) { URL.revokeObjectURL(oldUrl); if (oldImg && oldImg.parentNode) oldImg.remove(); }
+                                resolve(bUrl);
+                            };
+                            img.onerror = () => { this.blobs[url] = bUrl; resolve(bUrl); };
+                            img.src = bUrl;
+                        } else resolve(url);
+                    }, onerror: () => resolve(url)
+                });
+            });
+        }
+
+        async preloadAll(forceReload = false) {
+            const urls = new Set();
+            const bgData = this.app.settings.bgData;
+            for (let key in bgData) {
+                let u = bgData[key];
+                if (u && u.trim() !== "") urls.add(this.app.ui.getFullImageUrl(u));
+            }
+            const promises = Array.from(urls).map(url => this.loadSingle(url, forceReload));
+            await Promise.all(promises);
+        }
+    }
 
     // =====================================================================
-    // 8. UI Manager
+    // 8. Class: VoiceUI
     // =====================================================================
-    const UI = {
-        pipWindow: null, elements: {}, shadowCache: {}, whiteShadowCache: null, greenShadowCache: null,
+    class VoiceUI {
+        constructor(app) {
+            this.app = app;
+            this.elements = {};
+            this.shadowCache = {};
+            this.sleepTimer = null;
+            this.baseFont = '"UD デジタル 教科書体 NK", "UD Digital Kyokasho-tai NK", sans-serif';
+            this.transcriptClearTimer = null;
+            this.isSlidingChat = false;
+        }
+
+        getFullImageUrl(url) {
+            if (!url) return "";
+            if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('blob:')) return url;
+            const baseUrl = this.app.settings.data.baseUrl || "http://localhost:8000/";
+            const base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+            const path = url.startsWith('/') ? url.substring(1) : url;
+            return base + path;
+        }
+
+        getSharpDoubleOutline(outerColor) {
+            if(this.shadowCache[outerColor]) return this.shadowCache[outerColor];
+            const w = '#ffffff'; const c = outerColor;
+            const inner = `2px 0 0 ${w}, -2px 0 0 ${w}, 0 2px 0 ${w}, 0 -2px 0 ${w}, 2px 2px 0 ${w}, -2px -2px 0 ${w}, 2px -2px 0 ${w}, -2px 2px 0 ${w}`;
+            const outer = `4px 0 0 ${c}, -4px 0 0 ${c}, 0 4px 0 ${c}, 0 -4px 0 ${c}, 4px 4px 0 ${c}, -4px -4px 0 ${c}, 4px -4px 0 ${c}, -4px 4px 0 ${c}, 4px 2px 0 ${c}, -4px 2px 0 ${c}, 4px -2px 0 ${c}, -4px -2px 0 ${c}, 2px 4px 0 ${c}, -2px 4px 0 ${c}, 2px -4px 0 ${c}, -2px -4px 0 ${c}`;
+            const shadow = `${inner}, ${outer}`;
+            this.shadowCache[outerColor] = shadow;
+            return shadow;
+        }
+
         build() {
-            const mainContainer = document.createElement('div');
-            Object.assign(mainContainer.style, { display: 'none', position: 'relative', width: '100%', height: '100%', fontFamily: 'sans-serif', overflow: 'hidden', backgroundColor: Settings.data.bgColor, boxSizing: 'border-box', display: 'flex', flexDirection: 'row' });
+            const sd = this.app.settings.data;
+            const panel = document.createElement('div');
+            Object.assign(panel.style, {
+                position: 'fixed',
+                width: `${sd.savedPipWidth || 336}px`,
+                height: `${sd.savedPipHeight || 600}px`,
+                backgroundColor: sd.bgColor,
+                zIndex: '2147483647',
+                display: 'flex', flexDirection: 'column',
+                borderRadius: '8px', overflow: 'hidden',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.5)', border: '2px solid #333'
+            });
+
+            if (sd.savedPipLeft !== undefined && sd.savedPipTop !== undefined) {
+                panel.style.left = `${sd.savedPipLeft}px`;
+                panel.style.top = `${sd.savedPipTop}px`;
+            } else {
+                panel.style.bottom = '20px';
+                panel.style.right = '20px';
+            }
+
+            const resizeGrip = document.createElement('div');
+            Object.assign(resizeGrip.style, {
+                position: 'absolute', top: '0', left: '0', width: '16px', height: '16px',
+                cursor: 'nwse-resize', zIndex: '101', background: 'transparent'
+            });
+            panel.appendChild(resizeGrip);
+
             const customStyles = document.createElement('style');
             customStyles.textContent = `
                 @keyframes spinGlobe { 0% { transform: perspective(150px) rotateX(20deg) rotateY(0deg); } 100% { transform: perspective(150px) rotateX(20deg) rotateY(360deg); } }
-                @keyframes floatHeart { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; } 100% { transform: translate(-50%, -200px) scale(1.5); opacity: 0; } }
+                @keyframes floatHeartSway { 0% { transform: translate(-50%, -50%) scale(0.5) rotate(0deg); opacity: 1; } 33% { transform: translate(calc(-50% - 20px), -60px) scale(1.0) rotate(-15deg); opacity: 0.9; } 66% { transform: translate(calc(-50% + 20px), -120px) scale(1.3) rotate(15deg); opacity: 0.6; } 100% { transform: translate(-50%, -200px) scale(1.5) rotate(0deg); opacity: 0; } }
                 .icon-spin { display: inline-block; animation: spinGlobe 1.5s linear infinite; }
-                .heart-effect { position: absolute; color: #ff66cc; font-size: 84px; pointer-events: none; z-index: 9999; animation: floatHeart 1.2s ease-out forwards; text-shadow: 2px 2px 4px #fff, -2px -2px 4px #fff, 2px -2px 4px #fff, -2px 2px 4px #fff; }
+                .heart-effect { position: fixed; color: #ff66cc; pointer-events: none; z-index: 2147483647; animation: floatHeartSway 1.2s ease-out forwards; text-shadow: 2px 2px 4px #fff, -2px -2px 4px #fff, 2px -2px 4px #fff, -2px 2px 4px #fff; }
                 .setting-group { border: 1px solid #444; padding: 10px; border-radius: 8px; margin-bottom: 12px; background: #1a1a1a; }
                 .setting-group-title { font-weight: bold; margin-bottom: 8px; color: #ffccff; font-size: 13px; border-bottom: 1px solid #444; padding-bottom: 4px; }
                 .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px;}
@@ -323,103 +737,286 @@
                 .test-btn { background-color: #444; color: #fff; border: 1px solid #666; border-radius: 4px; cursor: pointer; padding: 2px 8px; font-size: 10px; transition: background 0.2s; }
                 .test-btn:hover { background-color: #666; }
                 .style-select { background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 10px; padding: 2px; }
-                .voice-slider-container { display: flex; gap: 5px; margin-top: 2px; }
-                .voice-slider-item { display: flex; flex-direction: column; width: 33%; font-size: 9px; color: #ccc; }
+                .voice-slider-container { display: flex; gap: 5px; margin-top: 2px; flex-wrap: wrap; }
+                .voice-slider-item { display: flex; flex-direction: column; width: 24%; font-size: 9px; color: #ccc; }
                 .voice-slider-item input { width: 100%; margin: 0; }
                 .voice-slider-header { display: flex; justify-content: space-between; }
                 hr { border-color: #444; margin: 10px 0; }
             `;
-            mainContainer.appendChild(customStyles);
+            document.head.appendChild(customStyles);
+
+            const dragHeader = document.createElement('div');
+            Object.assign(dragHeader.style, {
+                width: '100%', height: '24px', background: '#111', cursor: 'grab',
+                display: 'flex', justifyContent: 'center', alignItems: 'center',
+                color: '#aaa', fontSize: '11px', fontWeight: 'bold', flexShrink: '0',
+                userSelect: 'none', borderBottom: '1px solid #333'
+            });
+            dragHeader.textContent = "≡ 埋め込み実況システム ≡";
+            panel.appendChild(dragHeader);
+
+            const mainContainer = document.createElement('div');
+            Object.assign(mainContainer.style, {
+                position: 'relative', width: '100%', height: 'calc(100% - 24px)',
+                fontFamily: 'sans-serif', overflow: 'hidden', boxSizing: 'border-box',
+                display: 'flex', flexDirection: 'row'
+            });
+
             const contentWrapper = document.createElement('div');
-            Object.assign(contentWrapper.style, { position: 'relative', flexGrow: '1', height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' });
+            Object.assign(contentWrapper.style, {
+                position: 'relative', flexGrow: '1', height: '100%', overflow: 'hidden',
+                display: 'flex', flexDirection: 'column', boxSizing: 'border-box'
+            });
 
-            const clockElement = document.createElement('div'); Object.assign(clockElement.style, { position: 'absolute', top: '10px', right: '10px', color: '#000000', fontSize: '18px', fontWeight: 'bold', textShadow: this.getWhiteOutline(), zIndex: '50', pointerEvents: 'none', fontFamily: 'monospace', whiteSpace: 'nowrap' }); setInterval(() => { const now = new Date(); clockElement.textContent = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`; }, 1000);
-            const pingElement = document.createElement('div'); Object.assign(pingElement.style, { position: 'absolute', top: '10px', left: '10px', color: '#000000', fontSize: '16px', fontWeight: 'bold', textShadow: this.getWhiteOutline(), zIndex: '50', pointerEvents: 'none', fontFamily: 'monospace', whiteSpace: 'nowrap', display: 'flex', gap: '5px' }); const pingCldSpan = document.createElement('span'); pingCldSpan.style.color = '#00ffff'; pingCldSpan.textContent = "CLD: --ms"; const pingDiviSpan = document.createElement('span'); pingDiviSpan.style.color = '#000000'; pingDiviSpan.textContent = "|"; const pingTtsSpan = document.createElement('span'); pingTtsSpan.style.color = '#ff00ff'; pingTtsSpan.textContent = "TTS: --ms"; pingElement.append(pingCldSpan, pingDiviSpan, pingTtsSpan);
+            const topBarsContainer = document.createElement('div');
+            Object.assign(topBarsContainer.style, {
+                position: 'absolute', top: '0', left: '0', width: '100%', display: 'flex', flexDirection: 'column', zIndex: '100'
+            });
 
-            // 【変更】リソース表示の右端に 3% の余白を追加
-            const resourceElement = document.createElement('div'); Object.assign(resourceElement.style, { position: 'absolute', bottom: '10px', right: '3%', color: '#ffffff', fontSize: '16px', fontWeight: 'bold', textShadow: this.getGreenOutline(), zIndex: '50', pointerEvents: 'none', fontFamily: 'monospace', whiteSpace: 'nowrap' }); resourceElement.textContent = `CPU: --% | GPU: --% | MEM: --MB`;
+            const sleepBarBg = document.createElement('div'); sleepBarBg.style.cssText = "width: 100%; height: 5px; background: #333;";
+            const sleepBarFill = document.createElement('div'); sleepBarFill.style.cssText = "width: 100%; height: 100%; background: #00ccff; transition: width 1s linear, background-color 0.3s;";
+            sleepBarBg.appendChild(sleepBarFill);
 
-            const statusContainer = document.createElement('div'); Object.assign(statusContainer.style, { position: 'absolute', top: '40px', left: '5%', backgroundColor: 'transparent', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', zIndex: '25', pointerEvents: 'none' });
-            const statusTextValue = document.createElement('div'); Object.assign(statusTextValue.style, { fontSize: '24px', fontWeight: 'bold', color: '#000000', textAlign: 'left', marginBottom: '2px' }); statusContainer.appendChild(statusTextValue);
-            const micStatusContainer = document.createElement('div'); Object.assign(micStatusContainer.style, { fontSize: '14px', fontWeight: 'bold', color: '#555', textAlign: 'left', textShadow: '1px 1px 2px rgba(255,255,255,0.8)' }); statusContainer.appendChild(micStatusContainer);
+            const hotBarBg = document.createElement('div'); hotBarBg.style.cssText = "width: 100%; height: 5px; background: #333;";
+            const hotBarFill = document.createElement('div'); hotBarFill.style.cssText = "width: 0%; height: 100%; background: #ff4444; transition: width 1s linear;";
+            hotBarBg.appendChild(hotBarFill);
 
-            const transcriptContainer = document.createElement('div'); Object.assign(transcriptContainer.style, { position: 'absolute', top: '90px', right: '10%', transform: 'translateY(-50%)', backgroundColor: 'transparent', display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', zIndex: '25', pointerEvents: 'none' });
-            const systemIcon = document.createElement('div'); systemIcon.className = "icon-spin"; Object.assign(systemIcon.style, { fontSize: '72px', color: '#000000', willChange: 'transform' }); transcriptContainer.append(systemIcon);
-            const displayArea = document.createElement('div'); Object.assign(displayArea.style, { width: '100%', flexGrow: '1', backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center bottom', backgroundColor: 'transparent', transform: 'translateZ(0)', willChange: 'background-image' });
-            const vizCanvas = document.createElement('canvas'); vizCanvas.id = 'vizCanvas'; Object.assign(vizCanvas.style, { position: 'absolute', bottom: '0', left: '0', width: '100%', height: '60px', pointerEvents: 'none', zIndex: '15', opacity: '0.7', backgroundColor: 'transparent', transform: 'translateZ(0)' }); vizCanvas.width = 300; vizCanvas.height = 60;
+            topBarsContainer.append(sleepBarBg, hotBarBg);
+            contentWrapper.appendChild(topBarsContainer);
 
-            contentWrapper.append(clockElement, pingElement, resourceElement, displayArea, statusContainer, transcriptContainer, vizCanvas);
+            const clockElement = document.createElement('div');
+            Object.assign(clockElement.style, {
+                position: 'absolute', top: '15px', right: '15px', color: '#000000',
+                fontSize: `${sd.fontSize_clock}px`, fontWeight: 'bold', textShadow: this.getSharpDoubleOutline('#888888'),
+                zIndex: '50', pointerEvents: 'none', fontFamily: this.baseFont, whiteSpace: 'nowrap'
+            });
+            setInterval(() => {
+                const now = new Date();
+                clockElement.textContent = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+            }, 1000);
 
-            // 【変更】マイクバーの幅を 16px -> 8px に変更
-            const micVizCanvas = document.createElement('canvas'); micVizCanvas.id = 'micVizCanvas'; Object.assign(micVizCanvas.style, { width: '8px', height: '100%', background: '#222', borderLeft: '1px solid #444', flexShrink: '0', transform: 'translateZ(0)' }); micVizCanvas.width = 8; micVizCanvas.height = 600;
+            const statusContainer = document.createElement('div');
+            Object.assign(statusContainer.style, {
+                position: 'absolute', top: '15px', left: '15px',
+                backgroundColor: 'transparent', display: 'flex', flexDirection: 'column',
+                alignItems: 'flex-start', gap: '10px', zIndex: '25', pointerEvents: 'none'
+            });
 
-            // 【変更】コンテナ背景を黒(#000)に戻し、文字のフチドリはそのまま維持
-            const btnContainer = document.createElement('div'); Object.assign(btnContainer.style, { width: '60px', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '15px', paddingBottom: '15px', gap: '10px', flexShrink: '0', backgroundColor: '#000', zIndex: '30' });
-            const baseBtnStyle = { width: '50px', height: '50px', border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: '35px', fontWeight: 'bold', padding: '0', textShadow: '2px 2px 4px rgba(0,0,0,0.8), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' };
-            const btnRestore = document.createElement('button'); btnRestore.textContent = '⏼'; Object.assign(btnRestore.style, baseBtnStyle); btnRestore.style.fontSize = '40px';
+            const statusTextValue = document.createElement('div');
+            Object.assign(statusTextValue.style, {
+                fontSize: `${sd.fontSize_status}px`, fontWeight: 'bold', color: '#000000',
+                textAlign: 'left', fontFamily: this.baseFont, lineHeight: '1'
+            });
+            statusContainer.appendChild(statusTextValue);
+
+            const micStatusContainer = document.createElement('div');
+            Object.assign(micStatusContainer.style, {
+                fontSize: `${sd.fontSize_micStatus}px`, fontWeight: 'bold', color: '#000000',
+                textAlign: 'left', fontFamily: this.baseFont, lineHeight: '1'
+            });
+            statusContainer.appendChild(micStatusContainer);
+
+            const transcriptText = document.createElement('div');
+            Object.assign(transcriptText.style, {
+                fontSize: `${sd.fontSize_transcript}px`, fontWeight: 'bold', color: '#000000',
+                textAlign: 'left', fontFamily: this.baseFont, lineHeight: '1.2', minHeight: '1.2em'
+            });
+            statusContainer.appendChild(transcriptText);
+
+            const transcriptContainer = document.createElement('div');
+            Object.assign(transcriptContainer.style, {
+                position: 'absolute', top: '90px', right: '10%', transform: 'translateY(-50%)',
+                backgroundColor: 'transparent', display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', zIndex: '25', pointerEvents: 'none'
+            });
+            const systemIcon = document.createElement('div');
+            systemIcon.className = "icon-spin";
+            Object.assign(systemIcon.style, { fontSize: '72px', color: '#000000', willChange: 'transform' });
+            transcriptContainer.append(systemIcon);
+
+            const displayArea = document.createElement('div');
+            Object.assign(displayArea.style, {
+                width: '100%', flexGrow: '1', backgroundSize: 'contain', backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'center bottom', backgroundColor: 'transparent', transform: 'translateZ(0)', willChange: 'background-image'
+            });
+
+            contentWrapper.append(clockElement, displayArea, statusContainer, transcriptContainer);
+
+            const micVizCanvas = document.createElement('canvas');
+            micVizCanvas.id = 'micVizCanvas';
+            Object.assign(micVizCanvas.style, {
+                width: '8px', height: '100%', background: '#222', borderLeft: '1px solid #444', flexShrink: '0', transform: 'translateZ(0)'
+            });
+            micVizCanvas.width = 8;
+            micVizCanvas.height = 600;
+
+            const btnContainer = document.createElement('div');
+            Object.assign(btnContainer.style, {
+                width: '60px', height: '100%', display: 'flex', flexDirection: 'column',
+                alignItems: 'center', paddingTop: '15px', paddingBottom: '15px', gap: '10px',
+                flexShrink: '0', backgroundColor: '#000', zIndex: '30'
+            });
+
+            const baseBtnStyle = {
+                width: '50px', height: '50px', border: 'none', background: 'transparent', color: '#fff',
+                cursor: 'pointer', fontSize: '30px', fontWeight: 'bold', padding: '0',
+                fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
+                textShadow: '2px 2px 4px rgba(0,0,0,0.8), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000'
+            };
+
+            const btnMinimize = document.createElement('button'); btnMinimize.textContent = "▼"; Object.assign(btnMinimize.style, baseBtnStyle); btnMinimize.style.fontSize = '25px';
+            const btnSlider = document.createElement('button'); btnSlider.textContent = "🎚️"; Object.assign(btnSlider.style, baseBtnStyle); btnSlider.style.cursor = 'ew-resize';
+            const btnReload = document.createElement('button'); btnReload.textContent = "🔃"; Object.assign(btnReload.style, baseBtnStyle);
+
             const btn1 = document.createElement('button'); btn1.textContent = "①"; Object.assign(btn1.style, baseBtnStyle);
             const btn2 = document.createElement('button'); btn2.textContent = "②"; Object.assign(btn2.style, baseBtnStyle);
             const btn3 = document.createElement('button'); btn3.textContent = "③"; Object.assign(btn3.style, baseBtnStyle);
             const btn4 = document.createElement('button'); btn4.textContent = "④"; Object.assign(btn4.style, baseBtnStyle);
             const btn5 = document.createElement('button'); btn5.textContent = "⑤"; Object.assign(btn5.style, baseBtnStyle);
-            const btnPower = document.createElement('button'); btnPower.textContent = '⏻'; Object.assign(btnPower.style, baseBtnStyle); btnPower.style.fontSize = '45px'; btnPower.style.marginTop = 'auto'; btnPower.style.marginBottom = '25px';
-            btnContainer.append(btnRestore, btn1, btn2, btn3, btn4, btn5, btnPower); mainContainer.append(contentWrapper, micVizCanvas, btnContainer);
-            this.elements = { mainContainer, displayArea, statusTextValue, micStatusContainer, systemIcon, vizCanvas, micVizCanvas, pingCldSpan, pingTtsSpan, resourceElement, btnRestore, btn1, btn2, btn3, btn4, btn5, btnPower };
-            this.buildSettingsPanels(); this.attachEvents();
-        },
 
-        getWhiteOutline() { if(!this.whiteShadowCache) this.whiteShadowCache = `1px 1px 0 #fff, -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 0px 1px 0 #fff, 0px -1px 0 #fff, 1px 0px 0 #fff, -1px 0px 0 #fff, 2px 2px 0 #fff, -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 0px 2px 0 #fff, 0px -2px 0 #fff, 2px 0px 0 #fff, -2px 0px 0 #fff`; return this.whiteShadowCache; },
-        getGreenOutline() { if(!this.greenShadowCache) this.greenShadowCache = `1px 1px 0 #006600, -1px -1px 0 #006600, 1px -1px 0 #006600, -1px 1px 0 #006600, 0px 1px 0 #006600, 0px -1px 0 #006600, 1px 0px 0 #006600, -1px 0px 0 #006600, 2px 2px 0 #006600, -2px -2px 0 #006600, 2px -2px 0 #006600, -2px 2px 0 #006600, 0px 2px 0 #006600, 0px -2px 0 #006600, 2px 0px 0 #006600, -2px 0px 0 #006600`; return this.greenShadowCache; },
-        getRichColorOutline(outerColor) { if(this.shadowCache[outerColor]) return this.shadowCache[outerColor]; const w = '#ffffff'; const c = outerColor; const shadow = `2px 2px 0 ${w}, -2px -2px 0 ${w}, 2px -2px 0 ${w}, -2px 2px 0 ${w}, 0px 2px 0 ${w}, 0px -2px 0 ${w}, 2px 0px 0 ${w}, -2px 0px 0 ${w}, 1px 1px 0 ${w}, -1px -1px 0 ${w}, 1px -1px 0 ${w}, -1px 1px 0 ${w}, 4px 4px 0 ${c}, -4px -4px 0 ${c}, 4px -4px 0 ${c}, -4px 4px 0 ${c}, 0px 4px 0 ${c}, 0px -4px 0 ${c}, 4px 0px 0 ${c}, -4px 0px 0 ${c}, 3px 3px 0 ${c}, -3px -3px 0 ${c}, 3px -3px 0 ${c}, -3px 3px 0 ${c}`; this.shadowCache[outerColor] = shadow; return shadow; },
+            const btnPower = document.createElement('button'); btnPower.textContent = '⏻';
+            Object.assign(btnPower.style, baseBtnStyle);
+            btnPower.style.fontSize = '40px'; btnPower.style.marginTop = 'auto'; btnPower.style.marginBottom = '25px';
+
+            btnContainer.append(btnMinimize, btnSlider, btnReload, btn1, btn2, btn3, btn4, btn5, btnPower);
+            mainContainer.append(contentWrapper, micVizCanvas, btnContainer);
+            panel.appendChild(mainContainer);
+
+            this.elements = {
+                panel, resizeGrip, dragHeader, mainContainer, contentWrapper, displayArea, statusTextValue, micStatusContainer, transcriptText,
+                systemIcon, micVizCanvas, sleepBarFill, hotBarFill, clockElement,
+                btnMinimize, btnSlider, btnReload, btn1, btn2, btn3, btn4, btn5, btnPower
+            };
+
+            this.buildSettingsPanels();
+            this.attachEvents();
+            this.startSleepTimer();
+
+            return panel;
+        }
 
         buildSettingsPanels() {
+            const sd = this.app.settings.data;
+            const bgData = this.app.settings.bgData;
+
             const createPanel = (id) => {
-                const p = document.createElement('div'); Object.assign(p.style, { position: 'absolute', top: '0', left: '0', width: '100%', height: '100%', backgroundColor: 'rgba(15, 15, 15, 0.98)', color: '#fff', zIndex: '100', display: 'none', flexDirection: 'column', padding: '20px', boxSizing: 'border-box' });
-                const scroll = document.createElement('div'); scroll.style.flexGrow = '1'; scroll.style.overflowY = 'auto'; scroll.style.paddingRight = '5px';
-                const close = document.createElement('button'); close.textContent = "✕"; Object.assign(close.style, { position: 'absolute', top: '15px', right: '7px', width: '36px', height: '36px', borderRadius: '50%', background: '#333', border: '1px solid #ffccff', color: '#fff', zIndex: '110', cursor: 'pointer' });
-                close.onclick = (e) => { e.stopPropagation(); p.style.display = 'none'; }; p.append(scroll, close); this.elements.mainContainer.appendChild(p); return { panel: p, scroll: scroll };
+                const p = document.createElement('div');
+                Object.assign(p.style, {
+                    position: 'absolute', top: '0', left: '0', width: '100%', height: '100%',
+                    backgroundColor: 'rgba(15, 15, 15, 0.98)', color: '#fff', zIndex: '100',
+                    display: 'none', flexDirection: 'column', padding: '20px', boxSizing: 'border-box'
+                });
+                const scroll = document.createElement('div');
+                scroll.style.flexGrow = '1'; scroll.style.overflowY = 'auto'; scroll.style.paddingRight = '5px';
+                const close = document.createElement('button');
+                close.textContent = "✕";
+                Object.assign(close.style, {
+                    position: 'absolute', top: '15px', right: '7px', width: '36px', height: '36px',
+                    borderRadius: '50%', background: '#333', border: '1px solid #ffccff', color: '#fff', zIndex: '110', cursor: 'pointer'
+                });
+                close.onclick = (e) => { e.stopPropagation(); p.style.display = 'none'; };
+                p.append(scroll, close);
+                this.elements.mainContainer.appendChild(p);
+                return { panel: p, scroll: scroll };
             };
-            const uiHelpers = {
+
+            const buildVoiceOptions = (sel) => {
+                const opts = [
+                    {v: "default", t: "🗣️基本"}, {v: "61", t: "🐰通常"}, {v: "62", t: "😲おどろき"},
+                    {v: "63", t: "🤫ひそひそ"}, {v: "64", t: "😵へろへろ"}
+                ];
+                opts.forEach(o => {
+                    const opt = document.createElement('option');
+                    opt.value = o.v; opt.textContent = o.t;
+                    sel.appendChild(opt);
+                });
+            };
+
+            const helpers = {
                 createSlider: (label, key, min, max, step) => {
-                    const wrap = document.createElement('div'); wrap.style.marginBottom = '12px'; const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; font-size:12px;'; const lSpan = document.createElement('span'); lSpan.textContent = label; const vSpan = document.createElement('span'); vSpan.textContent = Settings.data[key]; header.append(lSpan, vSpan); const input = document.createElement('input'); Object.assign(input, { type: 'range', min, max, step, value: Settings.data[key], style: 'width:100%' }); input.oninput = (e) => { Settings.data[key] = parseFloat(e.target.value); vSpan.textContent = Settings.data[key]; }; input.onchange = (e) => { Settings.save(); TTS.clearCache(); }; wrap.append(header, input); return wrap;
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '12px';
+                    const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; font-size:12px;';
+                    const lSpan = document.createElement('span'); lSpan.textContent = label;
+                    const vSpan = document.createElement('span'); vSpan.textContent = sd[key];
+                    header.append(lSpan, vSpan);
+                    const input = document.createElement('input'); Object.assign(input, { type: 'range', min, max, step, value: sd[key], style: 'width:100%' });
+                    input.oninput = (e) => { sd[key] = parseFloat(e.target.value); vSpan.textContent = sd[key]; };
+                    input.onchange = () => { this.app.settings.save(); this.app.tts.clearCache(); };
+                    wrap.append(header, input); return wrap;
+                },
+                createNumberInput: (label, key, applyCallback) => {
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '10px';
+                    const header = document.createElement('div'); header.style.cssText = 'font-size:12px; margin-bottom:4px; font-weight:bold; color:#aaffaa;'; header.textContent = label;
+                    const input = document.createElement('input'); Object.assign(input, { type: 'number', value: sd[key] || 14, className: 'setting-input' });
+                    input.onchange = (e) => { sd[key] = parseInt(e.target.value, 10); this.app.settings.save(); if(applyCallback) applyCallback(sd[key]); };
+                    wrap.append(header, input); return wrap;
                 },
                 createColorInput: (label, key) => {
-                    const wrap = document.createElement('div'); wrap.style.marginBottom = '12px'; const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:12px;'; const lSpan = document.createElement('span'); lSpan.textContent = label; const input = document.createElement('input'); Object.assign(input, { type: 'color', value: Settings.data[key], style: 'cursor:pointer; width:50px; height:25px; border:none; background:transparent;' }); input.oninput = (e) => { Settings.data[key] = e.target.value; UI.elements.mainContainer.style.backgroundColor = Settings.data[key]; Settings.save(); }; header.append(lSpan, input); wrap.appendChild(header); return wrap;
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '12px';
+                    const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:12px;';
+                    const lSpan = document.createElement('span'); lSpan.textContent = label;
+                    const input = document.createElement('input'); Object.assign(input, { type: 'color', value: sd[key], style: 'cursor:pointer; width:50px; height:25px; border:none; background:transparent;' });
+                    input.oninput = (e) => { sd[key] = e.target.value; this.elements.panel.style.backgroundColor = sd[key]; this.app.settings.save(); };
+                    header.append(lSpan, input); wrap.appendChild(header); return wrap;
                 },
                 createSimpleTextInput: (label, key, placeholder) => {
                     const wrap = document.createElement('div'); wrap.style.marginBottom = '10px';
                     const header = document.createElement('div'); header.style.cssText = 'font-size:12px; margin-bottom:4px; font-weight:bold; color:#aaffaa;'; header.textContent = label;
-                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: Settings.data[key] || "", placeholder: placeholder, className: 'setting-input' });
-                    input.onchange = (e) => { Settings.data[key] = e.target.value; Settings.save(); };
+                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: sd[key] || "", placeholder: placeholder, className: 'setting-input' });
+                    input.onchange = (e) => { sd[key] = e.target.value; this.app.settings.save(); this.sync(); };
                     wrap.append(header, input); return wrap;
                 },
+                createWordInputWithMode: (label, wordKey, modeKey, placeholder) => {
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '10px';
+                    const header = document.createElement('div'); header.style.cssText = 'font-size:12px; margin-bottom:4px; font-weight:bold; color:#aaffaa; display:flex; justify-content:space-between; align-items:center;';
+                    const lSpan = document.createElement('span'); lSpan.textContent = label;
+
+                    const modeSel = document.createElement('select'); modeSel.className = "style-select";
+                    modeSel.style.backgroundColor = '#444';
+                    const optPart = document.createElement('option'); optPart.value = "PARTIAL"; optPart.textContent = "含む (部分一致)";
+                    const optExact = document.createElement('option'); optExact.value = "EXACT"; optExact.textContent = "のみ (完全一致)";
+                    if (sd[modeKey] === "EXACT") optExact.selected = true; else optPart.selected = true;
+                    modeSel.append(optPart, optExact);
+                    modeSel.onchange = (e) => { sd[modeKey] = e.target.value; this.app.settings.save(); };
+
+                    header.append(lSpan, modeSel);
+
+                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: sd[wordKey] || "", placeholder: placeholder, className: 'setting-input' });
+                    input.onchange = (e) => { sd[wordKey] = e.target.value; this.app.settings.save(); };
+
+                    wrap.append(header, input); return wrap;
+                },
+                // 【修正】ディレイスライダーの追加
                 createAdvancedVoiceInput: (label, key, placeholder) => {
                     const wrap = document.createElement('div'); wrap.style.cssText = 'margin-bottom: 12px; background: rgba(50,50,50,0.5); padding: 8px; border-radius: 6px; border-left: 3px solid #ffccff;';
                     const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px;';
                     const leftDiv = document.createElement('div'); leftDiv.style.cssText = 'display:flex; align-items:center; gap:5px;';
                     const lSpan = document.createElement('span'); lSpan.textContent = label; lSpan.style.fontWeight = 'bold'; leftDiv.appendChild(lSpan);
 
-                    const sSel = document.createElement('select'); sSel.className = "style-select"; sSel.innerHTML = `<option value="default">🗣️基本</option><option value="61">🐰通常</option><option value="62">😲おどろき</option><option value="63">🤫ひそひそ</option><option value="64">😵へろへろ</option>`; sSel.value = Settings.data[`style_${key}`] || "default";
-                    sSel.onchange = (e) => { Settings.data[`style_${key}`] = e.target.value; Settings.save(); TTS.clearCache(); };
+                    const sSel = document.createElement('select'); sSel.className = "style-select";
+                    buildVoiceOptions(sSel);
+                    sSel.value = sd[`style_${key}`] || "default";
+                    sSel.onchange = (e) => { sd[`style_${key}`] = e.target.value; this.app.settings.save(); this.app.tts.clearCache(); };
                     leftDiv.appendChild(sSel); header.appendChild(leftDiv);
 
-                    const testBtn = document.createElement('button'); testBtn.textContent = "▶"; testBtn.className = "test-btn"; testBtn.onclick = (e) => { e.stopPropagation(); if (Settings.data[key]) TTS.enqueue(Settings.data[key], key); }; header.appendChild(testBtn);
+                    const testBtn = document.createElement('button'); testBtn.textContent = "▶"; testBtn.className = "test-btn";
+                    testBtn.onclick = (e) => { e.stopPropagation(); if (sd[key]) this.app.tts.enqueue(sd[key], key); }; header.appendChild(testBtn);
 
-                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: Settings.data[key] || "", placeholder: placeholder, className: 'setting-input' }); input.onchange = (e) => { Settings.data[key] = e.target.value; Settings.save(); TTS.clearCache(); };
+                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: sd[key] || "", placeholder: placeholder, className: 'setting-input' });
+                    input.onchange = (e) => { sd[key] = e.target.value; this.app.settings.save(); this.app.tts.clearCache(); };
 
                     const sContainer = document.createElement('div'); sContainer.className = "voice-slider-container";
                     const mkSlider = (sLbl, sKey, min, max, step) => {
                         const sItem = document.createElement('div'); sItem.className = "voice-slider-item";
                         const sHead = document.createElement('div'); sHead.className = "voice-slider-header";
                         const valSpan = document.createElement('span');
-                        let initVal = Settings.data[`${sKey}_${key}`] !== undefined ? Settings.data[`${sKey}_${key}`] : Settings.data[sKey];
-                        valSpan.textContent = Number(initVal).toFixed(2);
+                        let initVal = sd[`${sKey}_${key}`] !== undefined ? sd[`${sKey}_${key}`] : sd[sKey];
+                        valSpan.textContent = Number(initVal).toFixed(1);
                         const sInput = document.createElement('input'); Object.assign(sInput, { type: 'range', min, max, step, value: initVal });
-                        sInput.oninput = (e) => { valSpan.textContent = parseFloat(e.target.value).toFixed(2); };
-                        sInput.onchange = (e) => { Settings.data[`${sKey}_${key}`] = parseFloat(e.target.value); Settings.save(); TTS.clearCache(); };
+                        sInput.oninput = (e) => { valSpan.textContent = parseFloat(e.target.value).toFixed(1); };
+                        sInput.onchange = (e) => { sd[`${sKey}_${key}`] = parseFloat(e.target.value); this.app.settings.save(); this.app.tts.clearCache(); };
                         sHead.append(document.createTextNode(sLbl), valSpan); sItem.append(sHead, sInput); return sItem;
                     };
-                    sContainer.append(mkSlider("高音", "pitch", -0.15, 0.15, 0.01), mkSlider("話速", "speed", 0.5, 2.0, 0.1), mkSlider("抑揚", "intonation", 0.0, 2.0, 0.1));
+                    sContainer.append(mkSlider("高音", "pitch", -0.15, 0.15, 0.01), mkSlider("話速", "speed", 0.5, 2.0, 0.1), mkSlider("抑揚", "intonation", 0.0, 2.0, 0.1), mkSlider("遅延(秒)", "delay", 0.0, 5.0, 0.1));
                     wrap.append(header, input, sContainer); return wrap;
                 },
                 createAdvancedVoiceRandomInput: (label, baseKey) => {
@@ -428,21 +1025,23 @@
                     const leftDiv = document.createElement('div'); leftDiv.style.cssText = 'display:flex; align-items:center; gap:5px;';
                     const lSpan = document.createElement('span'); lSpan.textContent = label; lSpan.style.fontWeight = 'bold'; leftDiv.appendChild(lSpan);
 
-                    const sSel = document.createElement('select'); sSel.className = "style-select"; sSel.innerHTML = `<option value="default">🗣️基本</option><option value="61">🐰通常</option><option value="62">😲おどろき</option><option value="63">🤫ひそひそ</option><option value="64">😵へろへろ</option>`; sSel.value = Settings.data[`style_${baseKey}`] || "default";
-                    sSel.onchange = (e) => { Settings.data[`style_${baseKey}`] = e.target.value; Settings.save(); TTS.clearCache(); };
+                    const sSel = document.createElement('select'); sSel.className = "style-select";
+                    buildVoiceOptions(sSel);
+                    sSel.value = sd[`style_${baseKey}`] || "default";
+                    sSel.onchange = (e) => { sd[`style_${baseKey}`] = e.target.value; this.app.settings.save(); this.app.tts.clearCache(); };
                     leftDiv.appendChild(sSel); header.appendChild(leftDiv);
 
                     const testBtn = document.createElement('button'); testBtn.textContent = "▶"; testBtn.className = "test-btn";
                     testBtn.onclick = (e) => {
                         e.stopPropagation();
-                        const texts = [Settings.data[`${baseKey}_1`], Settings.data[`${baseKey}_2`], Settings.data[`${baseKey}_3`]].filter(t => t && t.trim() !== "");
-                        if(texts.length > 0) TTS.enqueue(texts[Math.floor(Math.random() * texts.length)], baseKey);
+                        const texts = [sd[`${baseKey}_1`], sd[`${baseKey}_2`], sd[`${baseKey}_3`]].filter(t => t && t.trim() !== "");
+                        if(texts.length > 0) this.app.tts.enqueue(texts[Math.floor(Math.random() * texts.length)], baseKey);
                     };
                     header.appendChild(testBtn); wrap.appendChild(header);
 
                     for(let i=1; i<=3; i++) {
-                        const input = document.createElement('input'); Object.assign(input, { type: 'text', value: Settings.data[`${baseKey}_${i}`] || "", placeholder: `セリフ ${i}`, className: 'setting-input' });
-                        input.onchange = (e) => { Settings.data[`${baseKey}_${i}`] = e.target.value; Settings.save(); TTS.clearCache(); };
+                        const input = document.createElement('input'); Object.assign(input, { type: 'text', value: sd[`${baseKey}_${i}`] || "", placeholder: `セリフ ${i}`, className: 'setting-input' });
+                        input.onchange = (e) => { sd[`${baseKey}_${i}`] = e.target.value; this.app.settings.save(); this.app.tts.clearCache(); };
                         wrap.appendChild(input);
                     }
 
@@ -451,28 +1050,49 @@
                         const sItem = document.createElement('div'); sItem.className = "voice-slider-item";
                         const sHead = document.createElement('div'); sHead.className = "voice-slider-header";
                         const valSpan = document.createElement('span');
-                        let initVal = Settings.data[`${sKey}_${baseKey}`] !== undefined ? Settings.data[`${sKey}_${baseKey}`] : Settings.data[sKey];
+                        let initVal = sd[`${sKey}_${baseKey}`] !== undefined ? sd[`${sKey}_${baseKey}`] : sd[sKey];
                         valSpan.textContent = Number(initVal).toFixed(2);
                         const sInput = document.createElement('input'); Object.assign(sInput, { type: 'range', min, max, step, value: initVal });
                         sInput.oninput = (e) => { valSpan.textContent = parseFloat(e.target.value).toFixed(2); };
-                        sInput.onchange = (e) => { Settings.data[`${sKey}_${baseKey}`] = parseFloat(e.target.value); Settings.save(); TTS.clearCache(); };
+                        sInput.onchange = (e) => { sd[`${sKey}_${baseKey}`] = parseFloat(e.target.value); this.app.settings.save(); this.app.tts.clearCache(); };
                         sHead.append(document.createTextNode(sLbl), valSpan); sItem.append(sHead, sInput); return sItem;
                     };
                     sContainer.append(mkSlider("高音", "pitch", -0.15, 0.15, 0.01), mkSlider("話速", "speed", 0.5, 2.0, 0.1), mkSlider("抑揚", "intonation", 0.0, 2.0, 0.1));
                     wrap.appendChild(sContainer); return wrap;
                 },
-                createStatusConfigRow: (label, txtKey, iconKey) => { const wrap = document.createElement('div'); wrap.style.marginBottom = '12px'; const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px; color:#ffccff;'; const lSpan = document.createElement('span'); lSpan.textContent = label; header.appendChild(lSpan); const inputRow = document.createElement('div'); inputRow.style.cssText = 'display:flex; gap: 8px;'; const iconInput = document.createElement('input'); Object.assign(iconInput, { type: 'text', value: Settings.data[iconKey], className: 'setting-input', style: 'width: 40px; text-align: center; margin-bottom:0;' }); iconInput.placeholder = "🐰"; iconInput.onchange = (e) => { Settings.data[iconKey] = e.target.value; Settings.save(); UI.sync(); }; const txtInput = document.createElement('input'); Object.assign(txtInput, { type: 'text', value: Settings.data[txtKey], className: 'setting-input', style: 'flex-grow: 1; margin-bottom:0;' }); txtInput.placeholder = "テキスト"; txtInput.onchange = (e) => { Settings.data[txtKey] = e.target.value; Settings.save(); UI.sync(); }; inputRow.append(iconInput, txtInput); wrap.append(header, inputRow); return wrap; },
-                createBGInput: (label, key, placeholder = "画像URL") => { const wrap = document.createElement('div'); wrap.style.marginBottom = '8px'; const l = document.createElement('div'); l.textContent = label; l.style.cssText = 'font-size:12px; margin-bottom:4px;'; const input = document.createElement('input'); Object.assign(input, { type: 'text', value: Settings.bgData[key], placeholder: placeholder, className: 'setting-input' }); const saveHandler = (e) => { Settings.saveBg(key, e.target.value); UI.updateBackgroundImage(); }; input.onchange = saveHandler; input.oninput = saveHandler; wrap.append(l, input); return wrap; },
+                createStatusConfigRow: (label, txtKey, iconKey) => {
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '12px';
+                    const header = document.createElement('div'); header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px; color:#ffccff;';
+                    const lSpan = document.createElement('span'); lSpan.textContent = label; header.appendChild(lSpan);
+                    const inputRow = document.createElement('div'); inputRow.style.cssText = 'display:flex; gap: 8px;';
+                    const iconInput = document.createElement('input'); Object.assign(iconInput, { type: 'text', value: sd[iconKey], className: 'setting-input', style: 'width: 40px; text-align: center; margin-bottom:0;' });
+                    iconInput.placeholder = "🐰"; iconInput.onchange = (e) => { sd[iconKey] = e.target.value; this.app.settings.save(); this.sync(); };
+                    const txtInput = document.createElement('input'); Object.assign(txtInput, { type: 'text', value: sd[txtKey], className: 'setting-input', style: 'flex-grow: 1; margin-bottom:0;' });
+                    txtInput.placeholder = "テキスト"; txtInput.onchange = (e) => { sd[txtKey] = e.target.value; this.app.settings.save(); this.sync(); };
+                    inputRow.append(iconInput, txtInput); wrap.append(header, inputRow); return wrap;
+                },
+                createBGInput: (label, key, placeholder = "画像パス") => {
+                    const wrap = document.createElement('div'); wrap.style.marginBottom = '8px';
+                    const l = document.createElement('div'); l.textContent = label; l.style.cssText = 'font-size:12px; margin-bottom:4px;';
+                    const input = document.createElement('input'); Object.assign(input, { type: 'text', value: bgData[key], placeholder: placeholder, className: 'setting-input' });
+                    const saveHandler = async (e) => {
+                        this.app.settings.saveBg(key, e.target.value);
+                        const resolved = this.getFullImageUrl(e.target.value);
+                        if (resolved) await this.app.imageCache.loadSingle(resolved, true);
+                        this.updateBackgroundImage();
+                    };
+                    input.onchange = saveHandler; wrap.append(l, input); return wrap;
+                },
                 createBGGroup: (title, stateKey, hasSpeed = true, imageCount = 2) => {
                     const group = document.createElement('div'); group.className = "setting-group";
                     const titleEl = document.createElement('div'); titleEl.className = "setting-group-title"; titleEl.textContent = title; group.appendChild(titleEl);
                     for(let i=1; i<=imageCount; i++) {
-                        const label = (stateKey === "SPEAKING") ? (i===1 ? "画像URL① (通常)" : "画像URL② (変化)") : `画像URL${i}`;
-                        group.appendChild(uiHelpers.createBGInput(label, `${stateKey}_${i}`));
+                        const label = (stateKey === "SPEAKING") ? (i===1 ? "画像パス① (通常)" : "画像パス② (変化)") : `画像パス${i}`;
+                        group.appendChild(helpers.createBGInput(label, `${stateKey}_${i}`));
                         if (hasSpeed) {
                             const speedKey = `speed_${stateKey}_${i}`;
-                            if(Settings.data[speedKey] === undefined) Settings.data[speedKey] = 0.5;
-                            group.appendChild(uiHelpers.createSlider(`↳ 表示時間${i} (秒)`, speedKey, 0.1, 5.0, 0.1));
+                            if(sd[speedKey] === undefined) sd[speedKey] = 0.5;
+                            group.appendChild(helpers.createSlider(`↳ 表示時間${i} (秒)`, speedKey, 0.1, 5.0, 0.1));
                         }
                     }
                     return group;
@@ -480,246 +1100,830 @@
                 createRandomBGGroup: (title, stateKey) => {
                     const group = document.createElement('div'); group.className = "setting-group";
                     const titleEl = document.createElement('div'); titleEl.className = "setting-group-title"; titleEl.textContent = title + " (ランダム抽出)"; group.appendChild(titleEl);
-                    for(let i=1; i<=3; i++) group.appendChild(uiHelpers.createBGInput(`ランダム画像 ${i}`, `${stateKey}_${i}`));
+                    for(let i=1; i<=3; i++) group.appendChild(helpers.createBGInput(`ランダム画像 ${i}`, `${stateKey}_${i}`));
                     return group;
                 }
             };
 
-            // パネル1
             const p1 = createPanel('1'); this.elements.panel1 = p1.panel;
-            const saveSizeBtn = document.createElement('button'); saveSizeBtn.textContent = "現在のPiPサイズを記憶"; saveSizeBtn.className = "test-btn"; saveSizeBtn.style.cssText = "width: 100%; margin-bottom: 15px; padding: 10px; font-weight: bold; font-size: 13px;"; saveSizeBtn.onclick = (e) => { e.stopPropagation(); if(UI.pipWindow) { Settings.data.savedPipWidth = UI.pipWindow.innerWidth; Settings.data.savedPipHeight = UI.pipWindow.innerHeight; Settings.save(); alert(`記憶しました`); } }; p1.scroll.append(saveSizeBtn, uiHelpers.createColorInput("背景色", "bgColor"), document.createElement('hr'));
-            p1.scroll.appendChild(uiHelpers.createSlider("受付モード維持時間 (秒)", "hotModeDuration", 10, 300, 10));
-            p1.scroll.appendChild(uiHelpers.createSlider("オートスリープ時間 (秒)", "autoSleepTime", 30, 600, 10));
-            ["全体音量", "打鍵/ピポ音", "基本の話速", "基本の高音", "基本の抑揚"].forEach((l, i) => p1.scroll.appendChild(uiHelpers.createSlider(l, ["volume", "beepVolume", "speed", "pitch", "intonation"][i], i === 3 ? -0.15 : (i === 2 ? 0.5 : 0), 2, 0.1)));
-            p1.scroll.appendChild(uiHelpers.createSlider("口パク感度", "lipSyncThreshold", 1, 100, 1));
-            this.elements.speakerListContainer = document.createElement('div'); Object.assign(this.elements.speakerListContainer.style, { marginTop: '10px', padding: '10px', backgroundColor: '#222', borderRadius: '8px', fontSize: '12px' }); p1.scroll.appendChild(this.elements.speakerListContainer);
 
-            // パネル2
+            const saveSizeBtn = document.createElement('button');
+            saveSizeBtn.textContent = "現在のUI位置とサイズを記憶";
+            saveSizeBtn.className = "test-btn";
+            saveSizeBtn.style.cssText = "width: 100%; margin-bottom: 15px; padding: 10px; font-weight: bold; font-size: 13px; background: #660066; border-color: #880088;";
+            saveSizeBtn.onclick = (e) => {
+                e.stopPropagation();
+                sd.savedPipWidth = this.elements.panel.offsetWidth;
+                sd.savedPipHeight = this.elements.panel.offsetHeight;
+                sd.savedPipLeft = this.elements.panel.offsetLeft;
+                sd.savedPipTop = this.elements.panel.offsetTop;
+                this.app.settings.save();
+                alert("現在の位置とサイズを記憶しました。次回起動時に反映されます。");
+            };
+            p1.scroll.appendChild(saveSizeBtn);
+
+            const testAdjustmentBtn = document.createElement('button');
+            testAdjustmentBtn.textContent = "🔊 発話調整テスト（現在の設定で再生）";
+            testAdjustmentBtn.className = "test-btn";
+            testAdjustmentBtn.style.cssText = "width: 100%; margin-bottom: 15px; padding: 10px; font-weight: bold; font-size: 13px;";
+            testAdjustmentBtn.onclick = (e) => { e.stopPropagation(); this.app.tts.enqueue("現在設定されているパラメータで発話テストを行っています。声の調子はいかがでしょうか？"); };
+            p1.scroll.appendChild(testAdjustmentBtn);
+
+            p1.scroll.append(helpers.createColorInput("背景色", "bgColor"), document.createElement('hr'));
+            p1.scroll.appendChild(helpers.createSlider("受付モード維持時間 (秒)", "hotModeDuration", 10, 300, 10));
+            p1.scroll.appendChild(helpers.createSlider("オートスリープ時間 (秒)", "autoSleepTime", 30, 600, 10));
+            // 【追加】読み上げ区切り文字数と音声入力ディレイ
+            p1.scroll.appendChild(helpers.createSlider("💬 読み上げ区切り文字数 (1〜500)", "readChunkLength", 1, 500, 1));
+            p1.scroll.appendChild(helpers.createSlider("🎤 音声入力の確定ディレイ (秒)", "speechEndDelay", 0.0, 3.0, 0.1));
+            ["全体音量", "打鍵/ピポ音", "基本の話速"].forEach((l, i) => p1.scroll.appendChild(helpers.createSlider(l, ["volume", "beepVolume", "speed"][i], i === 2 ? 0.5 : 0, 2, 0.1)));
+
+            p1.scroll.appendChild(helpers.createSlider("基本の高音", "pitch", -0.15, 0.15, 0.01));
+            p1.scroll.appendChild(helpers.createSlider("基本の抑揚", "intonation", 0, 2, 0.1));
+
+            p1.scroll.appendChild(document.createElement('hr'));
+            p1.scroll.appendChild(helpers.createSlider("❤ ハート基本サイズ (0でオフ)", "heartSize", 0, 200, 1));
+            p1.scroll.appendChild(helpers.createSlider("❤ サイズばらつき (%)", "heartSizeRandom", 0, 100, 1));
+            p1.scroll.appendChild(helpers.createSlider("❤ 出現位置ばらつき (px)", "heartPosRandom", 0, 200, 1));
+
+            this.elements.speakerListContainer = document.createElement('div');
+            Object.assign(this.elements.speakerListContainer.style, { marginTop: '10px', padding: '10px', backgroundColor: '#222', borderRadius: '8px', fontSize: '12px' });
+            p1.scroll.appendChild(this.elements.speakerListContainer);
+
             const p2 = createPanel('2'); this.elements.panel2 = p2.panel;
+
+            const baseUrlWrap = helpers.createSimpleTextInput("🌐 ベースURL (画像パスの先頭に付加)", "baseUrl", "例: http://localhost:8000/");
+            baseUrlWrap.querySelector('input').onchange = async (e) => {
+                sd.baseUrl = e.target.value; this.app.settings.save();
+                await this.app.imageCache.preloadAll(true);
+                this.updateBackgroundImage();
+            };
+            p2.scroll.appendChild(baseUrlWrap);
+            p2.scroll.appendChild(document.createElement('hr'));
+
             const wordGroup = document.createElement('div'); wordGroup.className = "setting-group";
-            wordGroup.append(uiHelpers.createSimpleTextInput("① 名前 (ウェイクワード)", "wakeWord", "例: うさぎちゃん"), uiHelpers.createSimpleTextInput("② 終了ワード", "exitWord", "例: ありがとう"), uiHelpers.createSimpleTextInput("③ おやすみワード", "sleepWord", "例: おやすみ"));
+            wordGroup.append(
+                helpers.createWordInputWithMode("① 名前 (ウェイクワード)", "wakeWord", "matchMode_wake", "例: うさぎちゃん"),
+                helpers.createWordInputWithMode("② 終了ワード", "exitWord", "matchMode_exit", "例: ありがとう"),
+                helpers.createWordInputWithMode("③ おやすみワード", "sleepWord", "matchMode_sleep", "例: おやすみ"),
+                helpers.createWordInputWithMode("④ 送信ワード (空で即送信)", "sendWord", "matchMode_send", "例: 送信して"),
+                helpers.createWordInputWithMode("⑤ やり直しワード (入力を消去)", "clearWord", "matchMode_clear", "例: クリア"),
+                helpers.createWordInputWithMode("⑥ 待機延長ワード (時間回復)", "waitWord", "matchMode_wait", "例: ちょっと待って"),
+                // 【追加】中断ワード
+                helpers.createWordInputWithMode("⑦ 中断ワード (読み上げ強制停止)", "stopWord", "matchMode_stop", "例: ストップ")
+            );
             p2.scroll.appendChild(wordGroup);
             p2.scroll.append(
-                uiHelpers.createAdvancedVoiceInput("名前を呼ばれた時の返事", "wakeWordReply", "例: はい、なんです？"),
-                uiHelpers.createAdvancedVoiceInput("終了ワードの返事", "exitReply", "例: どういたしまして。"),
-                uiHelpers.createAdvancedVoiceInput("おやすみワードの返事", "sleepReply", "例: おやすみなさい。"),
-                uiHelpers.createAdvancedVoiceInput("システム起動時", "startupMessage", ""),
-                uiHelpers.createAdvancedVoiceInput("AI思考完了時", "finishedThinkingMessage", ""),
-                uiHelpers.createAdvancedVoiceInput("システム復帰時", "resumeMessage", ""),
+                helpers.createAdvancedVoiceInput("名前を呼ばれた時の返事", "wakeWordReply", "例: はい、なんです？"),
+                helpers.createAdvancedVoiceInput("終了ワードの返事", "exitReply", "例: どういたしまして。"),
+                helpers.createAdvancedVoiceInput("おやすみワードの返事", "sleepReply", "例: おやすみなさい。"),
+                helpers.createAdvancedVoiceInput("やり直しワードの返事", "clearReply", "例: 入力を取り消しました。"),
+                helpers.createAdvancedVoiceInput("待機延長ワードの返事", "waitReply", "例: はい、お待ちしています。"),
+                helpers.createAdvancedVoiceInput("システム起動時", "startupMessage", ""),
+                helpers.createAdvancedVoiceInput("AI思考完了時", "finishedThinkingMessage", ""),
+                helpers.createAdvancedVoiceInput("システム復帰時", "resumeMessage", ""),
                 document.createElement('hr'),
-                uiHelpers.createAdvancedVoiceRandomInput("リアクション: 驚く", "reactionSpeechSurprised"),
-                uiHelpers.createAdvancedVoiceRandomInput("リアクション: しょんぼり", "reactionSpeechSad"),
-                uiHelpers.createAdvancedVoiceRandomInput("リアクション: 怒る", "reactionSpeechAngry")
+                helpers.createAdvancedVoiceRandomInput("リアクション: 驚く", "reactionSpeechSurprised"),
+                helpers.createAdvancedVoiceRandomInput("リアクション: しょんぼり", "reactionSpeechSad"),
+                helpers.createAdvancedVoiceRandomInput("リアクション: 怒る", "reactionSpeechAngry")
             );
 
-            // パネル3
             const p3 = createPanel('3'); this.elements.panel3 = p3.panel;
-            p3.scroll.append(uiHelpers.createBGGroup("待機中 (IDLE)", "IDLE", true, 2), uiHelpers.createBGGroup("思考中 (BUSY)", "BUSY", true, 3), uiHelpers.createBGGroup("発話中 (SPEAKING)", "SPEAKING", false, 2), uiHelpers.createBGGroup("停止中 (STOPPED)", "STOPPED", true, 2), uiHelpers.createBGGroup("接続中 (SEARCHING)", "SEARCHING", true, 2), uiHelpers.createBGGroup("聞き取り中 (LISTENING)", "LISTENING", true, 2), uiHelpers.createBGGroup("困惑 (BLOCKED)", "BLOCKED", true, 2));
+            p3.scroll.appendChild(helpers.createBGGroup("待機中 (IDLE)", "IDLE", true, 2));
+            p3.scroll.appendChild(helpers.createBGGroup("思考中 (BUSY)", "BUSY", true, 3));
 
-            // パネル4
+            const speakGroup = helpers.createBGGroup("発話中 (SPEAKING)", "SPEAKING", false, 2);
+            const lipSyncSlider = helpers.createSlider("👄 口パク感度", "lipSyncThreshold", 1, 100, 1);
+            lipSyncSlider.style.marginTop = '10px';
+            speakGroup.appendChild(lipSyncSlider);
+            p3.scroll.appendChild(speakGroup);
+
+            p3.scroll.append(helpers.createBGGroup("停止中 (STOPPED)", "STOPPED", true, 2), helpers.createBGGroup("接続中 (SEARCHING)", "SEARCHING", true, 2), helpers.createBGGroup("聞き取り中 (LISTENING)", "LISTENING", true, 2), helpers.createBGGroup("困惑 (BLOCKED)", "BLOCKED", true, 2));
+
             const p4 = createPanel('4'); this.elements.panel4 = p4.panel;
             p4.scroll.append(
-                uiHelpers.createSlider("リアクション表示時間", "reactionDuration", 0.5, 5.0, 0.1),
+                helpers.createSlider("リアクション表示時間", "reactionDuration", 0.5, 5.0, 0.1),
                 document.createElement('hr'),
-                uiHelpers.createRandomBGGroup("驚く", "REACTION_SURPRISED"),
-                uiHelpers.createRandomBGGroup("しょんぼり", "REACTION_SAD"),
-                uiHelpers.createRandomBGGroup("怒る", "REACTION_ANGRY"),
-                uiHelpers.createRandomBGGroup("起きる (復帰時)", "REACTION_WAKEUP")
+                helpers.createRandomBGGroup("驚く", "REACTION_SURPRISED"),
+                helpers.createRandomBGGroup("しょんぼり", "REACTION_SAD"),
+                helpers.createRandomBGGroup("怒る", "REACTION_ANGRY"),
+                helpers.createRandomBGGroup("起きる (復帰時)", "REACTION_WAKEUP")
             );
 
-            // パネル5
             const p5 = createPanel('5'); this.elements.panel5 = p5.panel;
-            p5.scroll.append(uiHelpers.createStatusConfigRow("待機中 (IDLE)", "txt_IDLE", "icon_IDLE"), uiHelpers.createStatusConfigRow("思考中 (BUSY)", "txt_BUSY", "icon_BUSY"), uiHelpers.createStatusConfigRow("発話中 (SPEAKING)", "txt_SPEAKING", "icon_SPEAKING"), uiHelpers.createStatusConfigRow("停止中 (STOPPED)", "txt_STOPPED", "icon_STOPPED"), uiHelpers.createStatusConfigRow("接続中 (SEARCHING)", "txt_SEARCHING", "icon_SEARCHING"), uiHelpers.createStatusConfigRow("聞き取り中 (LISTENING)", "txt_LISTENING", "icon_LISTENING"), uiHelpers.createStatusConfigRow("困惑 (BLOCKED)", "txt_BLOCKED", "icon_BLOCKED"), uiHelpers.createStatusConfigRow("受付中 (HOTMODE)", "txt_HOTMODE", "icon_HOTMODE"));
-        },
+            p5.scroll.append(helpers.createStatusConfigRow("待機中 (IDLE)", "txt_IDLE", "icon_IDLE"), helpers.createStatusConfigRow("思考中 (BUSY)", "txt_BUSY", "icon_BUSY"), helpers.createStatusConfigRow("発話中 (SPEAKING)", "txt_SPEAKING", "icon_SPEAKING"), helpers.createStatusConfigRow("停止中 (STOPPED)", "txt_STOPPED", "icon_STOPPED"), helpers.createStatusConfigRow("接続中 (SEARCHING)", "txt_SEARCHING", "icon_SEARCHING"), helpers.createStatusConfigRow("聞き取り中 (LISTENING)", "txt_LISTENING", "icon_LISTENING"), helpers.createStatusConfigRow("困惑 (BLOCKED)", "txt_BLOCKED", "icon_BLOCKED"), helpers.createStatusConfigRow("受付中 (HOTMODE)", "txt_HOTMODE", "icon_HOTMODE"));
+
+            p5.scroll.appendChild(document.createElement('hr'));
+            p5.scroll.appendChild(helpers.createNumberInput("時計表示の文字サイズ (px)", "fontSize_clock", (v) => { if(this.elements.clockElement) this.elements.clockElement.style.fontSize = v + 'px'; }));
+            p5.scroll.appendChild(helpers.createNumberInput("ステータスの文字サイズ (px)", "fontSize_status", (v) => { if(this.elements.statusTextValue) this.elements.statusTextValue.style.fontSize = v + 'px'; }));
+            p5.scroll.appendChild(helpers.createNumberInput("マイクステータスの文字サイズ (px)", "fontSize_micStatus", (v) => { if(this.elements.micStatusContainer) this.elements.micStatusContainer.style.fontSize = v + 'px'; }));
+            p5.scroll.appendChild(helpers.createNumberInput("音声入力の文字サイズ (px)", "fontSize_transcript", (v) => { if(this.elements.transcriptText) this.elements.transcriptText.style.fontSize = v + 'px'; }));
+
+            p5.scroll.appendChild(document.createElement('hr'));
+            p5.scroll.appendChild(helpers.createSimpleTextInput("音声入力のアイコン", "icon_transcript", "🗣️"));
+            p5.scroll.appendChild(helpers.createSimpleTextInput("マイク待機中 ({wakeWord}使用可)", "micMsg_WAITING", "👂 「{wakeWord}」を待機中..."));
+            p5.scroll.appendChild(helpers.createSimpleTextInput("マイク受付中テキスト", "micMsg_HOTMODE", "🎤 用件をどうぞ！"));
+            p5.scroll.appendChild(helpers.createSimpleTextInput("マイク停止中テキスト", "micMsg_MUTED", "🔕 マイク一時停止"));
+        }
+
         attachEvents() {
             const els = this.elements;
-            els.btn1.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel1.style.display = 'flex'; }; els.btn2.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel2.style.display = 'flex'; }; els.btn3.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel3.style.display = 'flex'; }; els.btn4.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel4.style.display = 'flex'; }; els.btn5.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel5.style.display = 'flex'; };
-            els.btnRestore.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); if (this.pipWindow && Settings.data.savedPipWidth && Settings.data.savedPipHeight) { const diffW = this.pipWindow.outerWidth - this.pipWindow.innerWidth; const diffH = this.pipWindow.outerHeight - this.pipWindow.innerHeight; this.pipWindow.resizeTo(Settings.data.savedPipWidth + diffW, Settings.data.savedPipHeight + diffH); } };
-            els.btnPower.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); State.autoRestart = !State.autoRestart; if (!State.autoRestart && State.isSpeaking) TTS.stop(); if (State.hotModeTimeLeft > 0) { State.hotModeTimeLeft = 0; if (Speech.visualTimer) clearInterval(Speech.visualTimer); } State.autoSleepTimeLeft = Settings.data.autoSleepTime; this.sync(); };
-            els.mainContainer.onclick = (e) => {
+            const state = this.app.state;
+            const sd = this.app.settings.data;
+
+            let isDragging = false;
+            let dragStartX, dragStartY, initialLeft, initialTop;
+            els.dragHeader.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                dragStartX = e.clientX; dragStartY = e.clientY;
+                const rect = els.panel.getBoundingClientRect();
+                initialLeft = rect.left; initialTop = rect.top;
+                els.panel.style.right = 'auto'; els.panel.style.bottom = 'auto';
+                els.panel.style.left = initialLeft + 'px';
+                els.panel.style.top = initialTop + 'px';
+                els.dragHeader.style.cursor = 'grabbing';
+            });
+
+            let isResizing = false;
+            let resizeStartX, resizeStartY, resizeStartWidth, resizeStartHeight, resizeStartLeft, resizeStartTop;
+            els.resizeGrip.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                isResizing = false;
+                isResizing = true;
+                resizeStartX = e.clientX; resizeStartY = e.clientY;
+                const rect = els.panel.getBoundingClientRect();
+                resizeStartWidth = rect.width; resizeStartHeight = rect.height;
+                resizeStartLeft = rect.left; resizeStartTop = rect.top;
+                els.panel.style.right = 'auto'; els.panel.style.bottom = 'auto';
+                els.panel.style.left = resizeStartLeft + 'px';
+                els.panel.style.top = resizeStartTop + 'px';
+                document.body.style.cursor = 'nwse-resize';
+            });
+
+            els.btnSlider.addEventListener('mousedown', (e) => {
+                e.stopPropagation();
+                this.isSlidingChat = true;
+                this.slideStartX = e.clientX;
+                els.btnSlider.style.cursor = 'ew-resize';
+                document.body.style.cursor = 'ew-resize';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    let finalLeft = initialLeft + (e.clientX - dragStartX);
+                    let finalTop = initialTop + (e.clientY - dragStartY);
+                    finalLeft = Math.max(0, Math.min(finalLeft, window.innerWidth - els.panel.offsetWidth));
+                    finalTop = Math.max(0, Math.min(finalTop, window.innerHeight - els.panel.offsetHeight));
+                    els.panel.style.left = finalLeft + 'px';
+                    els.panel.style.top = finalTop + 'px';
+                }
+
+                if (isResizing) {
+                    const deltaX = e.clientX - resizeStartX;
+                    const deltaY = e.clientY - resizeStartY;
+                    let newWidth = resizeStartWidth - deltaX;
+                    let newHeight = resizeStartHeight - deltaY;
+                    let newLeft = Math.max(0, resizeStartLeft + deltaX);
+                    let newTop = Math.max(0, resizeStartTop + deltaY);
+
+                    newWidth = (resizeStartLeft + resizeStartWidth) - newLeft;
+                    newHeight = (resizeStartTop + resizeStartHeight) - newTop;
+
+                    if (newWidth < 200) { newWidth = 200; newLeft = (resizeStartLeft + resizeStartWidth) - 200; }
+                    if (newHeight < 300) { newHeight = 300; newTop = (resizeStartTop + resizeStartHeight) - 300; }
+
+                    els.panel.style.width = newWidth + 'px';
+                    els.panel.style.height = newHeight + 'px';
+                    els.panel.style.left = newLeft + 'px';
+                    els.panel.style.top = newTop + 'px';
+                }
+
+                if (this.isSlidingChat) {
+                    const deltaX = e.clientX - this.slideStartX;
+                    this.currentChatOffset = (sd.savedChatOffset || 0) + deltaX;
+                    const mainEl = document.querySelector('chat-window') || document.querySelector('main > div:last-child') || document.querySelector('main');
+                    if (mainEl) {
+                        mainEl.style.transform = `translateX(${this.currentChatOffset}px)`;
+                        mainEl.style.transition = 'none';
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isDragging) { isDragging = false; els.dragHeader.style.cursor = 'grab'; }
+                if (isResizing) {
+                    isResizing = false; document.body.style.cursor = 'default';
+                }
+                if (this.isSlidingChat) {
+                    this.isSlidingChat = false;
+                    sd.savedChatOffset = this.currentChatOffset;
+                    this.app.settings.save();
+                    els.btnSlider.style.cursor = 'ew-resize'; document.body.style.cursor = 'default';
+                }
+            });
+
+            els.btnMinimize.onclick = (e) => {
+                e.stopPropagation();
+                state.autoRestart = false;
+                if (state.isSpeaking) this.app.tts.stop();
+                if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer);
+                this.sync();
+
+                els.panel.style.display = 'none';
+
+                const resumeBtn = document.createElement('button');
+                resumeBtn.textContent = "▶ 実況システム復帰";
+                Object.assign(resumeBtn.style, {
+                    position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999',
+                    padding: '12px 24px', backgroundColor: '#009900', color: '#fff',
+                    border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer',
+                    fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
+                    transition: 'transform 0.2s'
+                });
+                resumeBtn.onmouseover = () => resumeBtn.style.transform = 'scale(1.05)';
+                resumeBtn.onmouseout = () => resumeBtn.style.transform = 'scale(1)';
+                document.body.appendChild(resumeBtn);
+
+                resumeBtn.onclick = () => {
+                    resumeBtn.remove();
+                    els.panel.style.display = 'flex';
+                    state.autoRestart = true;
+                    state.autoSleepTimeLeft = sd.autoSleepTime;
+                    this.sync();
+                };
+            };
+
+            els.btnReload.onclick = async (e) => {
+                e.stopPropagation();
+                if (state.isTestingImages) return;
+
+                this.app.audio.playBeep();
+                this.app.tts.enqueue("画像の再読み込みを開始しました。5秒後にテスト再生を行います。");
+
+                state.isTestingImages = true;
+
+                await this.app.imageCache.preloadAll(true);
+
+                const bgData = this.app.settings.bgData;
+                const testKeys = [
+                    'IDLE_1', 'IDLE_2', 'BUSY_1', 'BUSY_2', 'BUSY_3', 'SPEAKING_1', 'SPEAKING_2',
+                    'STOPPED_1', 'STOPPED_2', 'SEARCHING_1', 'SEARCHING_2', 'LISTENING_1', 'LISTENING_2',
+                    'BLOCKED_1', 'BLOCKED_2', 'REACTION_SURPRISED_1', 'REACTION_SURPRISED_2', 'REACTION_SURPRISED_3',
+                    'REACTION_SAD_1', 'REACTION_SAD_2', 'REACTION_SAD_3', 'REACTION_ANGRY_1', 'REACTION_ANGRY_2', 'REACTION_ANGRY_3',
+                    'REACTION_WAKEUP_1', 'REACTION_WAKEUP_2', 'REACTION_WAKEUP_3'
+                ];
+
+                setTimeout(() => {
+                    let idx = 0;
+                    const testInterval = setInterval(() => {
+                        if (idx >= testKeys.length) {
+                            clearInterval(testInterval);
+                            state.isTestingImages = false;
+                            this.updateBackgroundImage();
+                            this.app.audio.playBeep();
+                            return;
+                        }
+                        const key = testKeys[idx];
+                        const raw = bgData[key];
+                        if (raw && this.elements.displayArea) {
+                            const resolved = this.getFullImageUrl(raw);
+                            const blobUrl = this.app.imageCache.blobs[resolved] || resolved;
+                            this.elements.displayArea.style.backgroundImage = `url("${blobUrl}")`;
+                        }
+                        idx++;
+                    }, 500);
+                }, 5000);
+            };
+
+            els.btn1.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel1.style.display = 'flex'; };
+            els.btn2.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel2.style.display = 'flex'; };
+            els.btn3.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel3.style.display = 'flex'; };
+            els.btn4.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel4.style.display = 'flex'; };
+            els.btn5.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els.panel5.style.display = 'flex'; };
+
+            els.btnPower.onclick = (e) => {
+                e.stopPropagation();
+                this.hideAllPanels();
+                state.autoRestart = !state.autoRestart;
+                if (!state.autoRestart && state.isSpeaking) this.app.tts.stop();
+                if (state.hotModeTimeLeft > 0) {
+                    state.hotModeTimeLeft = 0;
+                    if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer);
+                }
+                state.autoSleepTimeLeft = sd.autoSleepTime;
+                this.sync();
+            };
+
+            els.contentWrapper.onclick = (e) => {
                 if (els.panel1.style.display === 'flex' || els.panel2.style.display === 'flex' || els.panel3.style.display === 'flex' || els.panel4.style.display === 'flex' || els.panel5.style.display === 'flex') return;
-                const heart = document.createElement('div'); heart.className = 'heart-effect'; heart.textContent = '❤'; heart.style.left = e.clientX + 'px'; heart.style.top = e.clientY + 'px'; els.mainContainer.appendChild(heart); setTimeout(() => heart.remove(), 1200); AudioModule.playTapSound();
-                State.autoSleepTimeLeft = Settings.data.autoSleepTime;
+
+                if (sd.heartSize > 0) {
+                    const finalSize = sd.heartSize * (1 + (Math.random() - 0.5) * 2 * (sd.heartSizeRandom / 100));
+                    const offsetX = (Math.random() - 0.5) * sd.heartPosRandom;
+                    const offsetY = (Math.random() - 0.5) * sd.heartPosRandom;
+                    const heart = document.createElement('div');
+                    heart.className = 'heart-effect';
+                    heart.textContent = '❤';
+                    heart.style.fontSize = finalSize + 'px';
+                    heart.style.left = (e.clientX + offsetX) + 'px';
+                    heart.style.top = (e.clientY + offsetY) + 'px';
+                    document.body.appendChild(heart);
+                    setTimeout(() => heart.remove(), 1200);
+                }
+
+                this.app.audio.playTapSound();
+
+                state.autoSleepTimeLeft = sd.autoSleepTime;
 
                 const playRndVoice = (baseKey) => {
-                    const texts = [Settings.data[`${baseKey}_1`], Settings.data[`${baseKey}_2`], Settings.data[`${baseKey}_3`]].filter(t => t && t.trim() !== "");
-                    if(texts.length > 0) TTS.enqueue(texts[Math.floor(Math.random() * texts.length)], baseKey);
+                    const texts = [sd[`${baseKey}_1`], sd[`${baseKey}_2`], sd[`${baseKey}_3`]].filter(t => t && t.trim() !== "");
+                    if(texts.length > 0) this.app.tts.enqueue(texts[Math.floor(Math.random() * texts.length)], baseKey);
                 };
 
-                if (!State.autoRestart) { State.autoRestart = true; this.sync(); this.triggerReaction("REACTION_WAKEUP"); setTimeout(() => { if (Settings.data.resumeMessage) TTS.enqueue(Settings.data.resumeMessage, "resumeMessage"); }, 1000); }
-                else if (State.isSpeaking) { TTS.stop(); this.triggerReaction("REACTION_SAD"); playRndVoice("reactionSpeechSad"); }
-                else if (State.current === "BUSY" || State.isGenerating) { this.triggerReaction("REACTION_ANGRY"); playRndVoice("reactionSpeechAngry"); }
-                else { this.triggerReaction("REACTION_SURPRISED"); playRndVoice("reactionSpeechSurprised"); }
-                if (State.hotModeTimeLeft > 0) { State.hotModeTimeLeft = 0; if (Speech.visualTimer) clearInterval(Speech.visualTimer); this.sync(); }
+                if (!state.autoRestart) {
+                    state.autoRestart = true;
+                    if (this.app.audio.ctx && this.app.audio.ctx.state === 'suspended') {
+                        this.app.audio.ctx.resume();
+                    }
+                    this.sync();
+                    this.triggerReaction("REACTION_WAKEUP");
+                    setTimeout(() => { if (sd.resumeMessage) this.app.tts.enqueue(sd.resumeMessage, "resumeMessage"); }, 1000);
+                } else if (state.isSpeaking) {
+                    this.app.tts.stop();
+                    this.triggerReaction("REACTION_SAD"); playRndVoice("reactionSpeechSad");
+                } else if (state.current === "BUSY" || state.isGenerating) {
+                    this.triggerReaction("REACTION_ANGRY"); playRndVoice("reactionSpeechAngry");
+                } else {
+                    this.triggerReaction("REACTION_SURPRISED"); playRndVoice("reactionSpeechSurprised");
+                }
+
+                if (state.hotModeTimeLeft > 0) {
+                    state.hotModeTimeLeft = 0;
+                    if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer);
+                    this.sync();
+                }
             };
-        },
-        hideAllPanels() { ['panel1', 'panel2', 'panel3', 'panel4', 'panel5'].forEach(k => { if(this.elements[k]) this.elements[k].style.display = 'none'; }); },
+        }
+
+        hideAllPanels() {
+            ['panel1', 'panel2', 'panel3', 'panel4', 'panel5'].forEach(k => {
+                if(this.elements[k]) this.elements[k].style.display = 'none';
+            });
+        }
 
         triggerReaction(reactionKey) {
-            State.activeReaction = reactionKey;
+            const state = this.app.state;
+            const bgData = this.app.settings.bgData;
+            state.activeReaction = reactionKey;
             const validIdx = [];
-            for(let i=1; i<=3; i++) { if(Settings.bgData[`${reactionKey}_${i}`]) validIdx.push(i); }
-            State.activeReactionIndex = validIdx.length > 0 ? validIdx[Math.floor(Math.random() * validIdx.length)] : 1;
+            for(let i=1; i<=3; i++) { if(bgData[`${reactionKey}_${i}`]) validIdx.push(i); }
+            state.activeReactionIndex = validIdx.length > 0 ? validIdx[Math.floor(Math.random() * validIdx.length)] : 1;
 
             this.updateBackgroundImage();
-            if (State.reactionTimer) clearTimeout(State.reactionTimer);
-            State.reactionTimer = setTimeout(() => { State.activeReaction = null; this.updateBackgroundImage(); }, (Settings.data.reactionDuration || 2.0) * 1000);
-        },
+            if (state.reactionTimer) clearTimeout(state.reactionTimer);
+            state.reactionTimer = setTimeout(() => {
+                state.activeReaction = null;
+                this.updateBackgroundImage();
+            }, (this.app.settings.data.reactionDuration || 2.0) * 1000);
+        }
 
         updateBackgroundImage() {
-            if (!this.elements.displayArea) return;
-            if (State.activeReaction) {
-                const url = Settings.bgData[`${State.activeReaction}_${State.activeReactionIndex}`] || Settings.bgData[`${State.activeReaction}_1`];
-                if (url) { const bgUrl = `url(${url})`; if(this.elements.displayArea.style.backgroundImage !== bgUrl) this.elements.displayArea.style.backgroundImage = bgUrl; return; }
-            }
-            let key = !State.autoRestart ? "STOPPED" : (State.isSpeaking ? "SPEAKING" : (State.isRecognizing ? "LISTENING" : State.current));
+            const state = this.app.state;
+            if (!this.elements.displayArea || state.isTestingImages) return;
+            const bgData = this.app.settings.bgData;
+            const sd = this.app.settings.data;
 
+            if (state.activeReaction) {
+                const url = bgData[`${state.activeReaction}_${state.activeReactionIndex}`] || bgData[`${state.activeReaction}_1`];
+                if (url) {
+                    const resolved = this.getFullImageUrl(url);
+                    const blobUrl = this.app.imageCache.blobs[resolved] || resolved;
+                    const bgUrl = `url("${blobUrl}")`;
+                    if(this.elements.displayArea.style.backgroundImage !== bgUrl) this.elements.displayArea.style.backgroundImage = bgUrl;
+                    return;
+                }
+            }
+
+            let key = !state.autoRestart ? "STOPPED" : (state.isSpeaking ? "SPEAKING" : (state.isRecognizing ? "LISTENING" : state.current));
             let maxImgs = (key === "BUSY") ? 3 : 2;
             let vUrls = [];
             for(let i=1; i<=maxImgs; i++) {
-                let u = Settings.bgData[`${key}_${i}`];
+                let u = bgData[`${key}_${i}`];
                 if (u && u.trim() !== "") vUrls.push({ url: u, idx: i });
             }
 
             if (vUrls.length === 0) {
-                if (key === "BLOCKED" && Settings.bgData["REACTION_ANGRY_1"]) vUrls = [{url: Settings.bgData["REACTION_ANGRY_1"], idx: 1}];
-                else if (Settings.bgData["IDLE_1"]) vUrls = [{url: Settings.bgData["IDLE_1"], idx: 1}];
+                if (key === "BLOCKED" && bgData["REACTION_ANGRY_1"]) vUrls = [{url: bgData["REACTION_ANGRY_1"], idx: 1}];
+                else if (bgData["IDLE_1"]) vUrls = [{url: bgData["IDLE_1"], idx: 1}];
             }
             if (vUrls.length === 0) return;
 
             let finalBG = '';
-            if (State.isSpeaking && AudioModule.analyser) {
-                const data = new Uint8Array(AudioModule.analyser.frequencyBinCount); AudioModule.analyser.getByteFrequencyData(data);
+            if (state.isSpeaking && this.app.audio.analyser) {
+                const data = new Uint8Array(this.app.audio.analyser.frequencyBinCount);
+                this.app.audio.analyser.getByteFrequencyData(data);
                 let sum = 0; for(let i=0; i<data.length; i++) sum += data[i];
-                const isOpen = sum / data.length > Settings.data.lipSyncThreshold;
+                const isOpen = sum / data.length > sd.lipSyncThreshold;
                 const currentFrame = (isOpen && vUrls.length > 1) ? vUrls[1] : vUrls[0];
-                finalBG = currentFrame.url;
-                State.currentFrameSpeed = Settings.data[`speed_${key}_${currentFrame.idx}`] || 0.5;
+                const resolved = this.getFullImageUrl(currentFrame.url);
+                finalBG = this.app.imageCache.blobs[resolved] || resolved;
+                state.currentFrameSpeed = sd[`speed_${key}_${currentFrame.idx}`] || 0.5;
             } else {
-                const currentFrame = vUrls[State.animStep % vUrls.length];
-                finalBG = currentFrame.url;
-                State.currentFrameSpeed = Settings.data[`speed_${key}_${currentFrame.idx}`] || 0.5;
+                const currentFrame = vUrls[state.animStep % vUrls.length];
+                const resolved = this.getFullImageUrl(currentFrame.url);
+                finalBG = this.app.imageCache.blobs[resolved] || resolved;
+                state.currentFrameSpeed = sd[`speed_${key}_${currentFrame.idx}`] || 0.5;
             }
-            const targetUrl = `url(${finalBG})`; if(this.elements.displayArea.style.backgroundImage !== targetUrl) this.elements.displayArea.style.backgroundImage = targetUrl;
-        },
+
+            const targetUrl = `url("${finalBG}")`;
+            if(this.elements.displayArea.style.backgroundImage !== targetUrl) this.elements.displayArea.style.backgroundImage = targetUrl;
+        }
+
         startAnimationLoop() {
-            if (State.animTimeout) clearTimeout(State.animTimeout);
+            if (this.app.state.animTimeout) clearTimeout(this.app.state.animTimeout);
             const run = () => {
-                if (!State.isSpeaking && !State.activeReaction) {
-                    State.animStep++;
+                if (!this.app.state.isSpeaking && !this.app.state.activeReaction) {
+                    this.app.state.animStep++;
                     this.updateBackgroundImage();
                 }
-                const delay = (State.currentFrameSpeed || 0.5) * 1000;
-                State.animTimeout = setTimeout(run, delay);
+                const delay = (this.app.state.currentFrameSpeed || 0.5) * 1000;
+                this.app.state.animTimeout = setTimeout(run, delay);
             };
             run();
-        },
+        }
+
         sync(forceMessage = null, isError = false) {
-            const isMuted = (!State.autoRestart || State.isSpeaking || State.current === "BUSY" || State.isGenerating);
-            if (Speech.recognition) { if (isMuted && State.isRecognizing) { try { Speech.recognition.stop(); } catch(e){} } else if (!isMuted && !State.isRecognizing && State.autoRestart) { setTimeout(() => { if (!State.isRecognizing && State.autoRestart) try { Speech.recognition.start(); } catch(e){} }, 300); } }
-            let curKey = !State.autoRestart ? "STOPPED" : (State.isRecognizing ? "LISTENING" : State.current);
-            if (State.lastAnimStateKey !== curKey) { State.lastAnimStateKey = curKey; State.animStep = 0; this.startAnimationLoop(); } else this.updateBackgroundImage();
+            const state = this.app.state;
+            const sd = this.app.settings.data;
+            // 【変更】中断ワードを聞き取るため、システム停止時以外はマイクの認識を維持する
+            const isMuted = (!state.autoRestart);
+
+            if (!this.isSlidingChat && sd.savedChatOffset !== undefined && sd.savedChatOffset !== 0) {
+                const mainEl = document.querySelector('chat-window') || document.querySelector('main > div:last-child') || document.querySelector('main');
+                if (mainEl && mainEl.style.transform !== `translateX(${sd.savedChatOffset}px)`) {
+                    mainEl.style.transform = `translateX(${sd.savedChatOffset}px)`;
+                    mainEl.style.transition = 'none';
+                }
+            }
+
+            if (this.app.speech.recognition) {
+                if (isMuted && state.isRecognizing) {
+                    try { this.app.speech.recognition.stop(); } catch(e){}
+                } else if (!isMuted && !state.isRecognizing && state.autoRestart) {
+                    setTimeout(() => {
+                        if (!state.isRecognizing && state.autoRestart) try { this.app.speech.recognition.start(); } catch(e){}
+                    }, 300);
+                }
+            }
+
+            let curKey = !state.autoRestart ? "STOPPED" : (state.isRecognizing ? "LISTENING" : state.current);
+            if (state.lastAnimStateKey !== curKey) {
+                state.lastAnimStateKey = curKey;
+                state.animStep = 0;
+                this.startAnimationLoop();
+            } else {
+                this.updateBackgroundImage();
+            }
+
             let fT = "", sI = "", oC = "";
             if (forceMessage) { sI = isError ? "⚠️" : "ℹ️"; fT = forceMessage; oC = isError ? "#ff0000" : "#ff00ff"; }
-            else if (!State.autoRestart) { sI = Settings.data.icon_STOPPED; fT = Settings.data.txt_STOPPED; oC = "#888888"; }
-            else if (State.isRecognizing) { sI = Settings.data.icon_LISTENING; fT = `${Settings.data.txt_LISTENING} (${State.autoSleepTimeLeft}s)`; oC = "#00ffaa"; }
-            else if (State.current === "SEARCHING") { sI = Settings.data.icon_SEARCHING; fT = `${Settings.data.txt_SEARCHING} (${State.autoSleepTimeLeft}s)`; oC = "#ffff00"; }
-            else if (State.current === "BLOCKED") { sI = Settings.data.icon_BLOCKED; fT = Settings.data.txt_BLOCKED; oC = "#ff6600"; }
-            else if (State.current === "BUSY" || State.isGenerating) { sI = Settings.data.icon_BUSY; fT = Settings.data.txt_BUSY; oC = "#88aaff"; }
-            else if (State.isSpeaking) { sI = Settings.data.icon_SPEAKING; fT = Settings.data.txt_SPEAKING || "発話中..."; oC = "#ff00ff"; }
-            else if (State.hotModeTimeLeft > 0) { sI = Settings.data.icon_HOTMODE; fT = `${Settings.data.txt_HOTMODE} (${State.hotModeTimeLeft}s)`; oC = State.hotModeTimeLeft <= 10 ? "#ff0000" : "#00ffff"; }
-            else { sI = Settings.data.icon_IDLE; fT = `${Settings.data.txt_IDLE} (${State.autoSleepTimeLeft}s)`; oC = "#ff00ff"; }
-            if (this.elements.statusTextValue.textContent !== fT) { this.elements.statusTextValue.textContent = fT; this.elements.statusTextValue.style.textShadow = this.getRichColorOutline(oC); }
-            if (this.elements.systemIcon.textContent !== sI) { this.elements.systemIcon.textContent = sI; this.elements.systemIcon.style.textShadow = this.getRichColorOutline(oC); }
+            else if (!state.autoRestart) { sI = sd.icon_STOPPED; fT = sd.txt_STOPPED; oC = "#888888"; }
+            else if (state.isRecognizing && !state.isSpeaking && state.current !== "BUSY" && !state.isGenerating) { sI = sd.icon_LISTENING; fT = sd.txt_LISTENING; oC = "#00ffaa"; }
+            else if (state.current === "SEARCHING") { sI = sd.icon_SEARCHING; fT = sd.txt_SEARCHING; oC = "#ffff00"; }
+            else if (state.current === "BLOCKED") { sI = sd.icon_BLOCKED; fT = sd.txt_BLOCKED; oC = "#ff6600"; }
+            else if (state.current === "BUSY" || state.isGenerating) { sI = sd.icon_BUSY; fT = sd.txt_BUSY; oC = "#88aaff"; }
+            else if (state.isSpeaking) { sI = sd.icon_SPEAKING; fT = sd.txt_SPEAKING || "発話中..."; oC = "#ff00ff"; }
+            else if (state.hotModeTimeLeft > 0) { sI = sd.icon_HOTMODE; fT = sd.txt_HOTMODE; oC = state.hotModeTimeLeft <= 10 ? "#ff0000" : "#00ffff"; }
+            else { sI = sd.icon_IDLE; fT = sd.txt_IDLE; oC = "#ff00ff"; }
+
+            if (this.elements.statusTextValue.textContent !== fT) {
+                this.elements.statusTextValue.textContent = fT;
+                this.elements.statusTextValue.style.textShadow = this.getSharpDoubleOutline(oC);
+            }
+            if (this.elements.systemIcon.textContent !== sI) {
+                this.elements.systemIcon.textContent = sI;
+                this.elements.systemIcon.style.textShadow = this.getSharpDoubleOutline(oC);
+            }
+
+            if(this.elements.sleepBarFill) {
+                const pct = Math.max(0, Math.min(100, (state.autoSleepTimeLeft / sd.autoSleepTime) * 100));
+                this.elements.sleepBarFill.style.width = pct + '%';
+                this.elements.sleepBarFill.style.backgroundColor = (!state.autoRestart || isMuted) ? '#555555' : (state.isRecognizing ? '#00ffaa' : '#00ccff');
+            }
+            if(this.elements.hotBarFill) {
+                const pct = Math.max(0, Math.min(100, (state.hotModeTimeLeft / sd.hotModeDuration) * 100));
+                this.elements.hotBarFill.style.width = pct + '%';
+            }
+
             let micMsg = "", micCol = "";
-            if (!State.autoRestart || State.isSpeaking || State.current === "BUSY" || State.isGenerating) { micMsg = "🔕 マイク一時停止"; micCol = "#aaaaaa"; }
-            else if (State.hotModeTimeLeft > 0) { micMsg = `🎤 用件をどうぞ！ (${State.hotModeTimeLeft}s)`; micCol = "#ff4444"; }
-            else { micMsg = `👂 「${Settings.data.wakeWord}」を待機中...`; micCol = "#00ccff"; }
-            if (this.elements.micStatusContainer.textContent !== micMsg) { this.elements.micStatusContainer.textContent = micMsg; this.elements.micStatusContainer.style.color = micCol; }
-        },
-        startMicVisualizer() {
-            const canvas = this.elements.micVizCanvas; const ctx = canvas.getContext('2d');
-            const render = () => { if (!this.pipWindow || !AudioModule.micAnalyser) return; requestAnimationFrame(render); const data = new Uint8Array(AudioModule.micAnalyser.frequencyBinCount); AudioModule.micAnalyser.getByteFrequencyData(data); let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i]; ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; ctx.fillRect(0, 0, canvas.width, canvas.height); const barH = ((sum / data.length) / 255) * canvas.height * 2.02; const grad = ctx.createLinearGradient(0, canvas.height, 0, 0); grad.addColorStop(0, '#ffff00'); grad.addColorStop(1, '#ff0000'); ctx.fillStyle = grad; ctx.fillRect(0, canvas.height - barH, canvas.width, barH); if (!State.autoRestart || State.isSpeaking || State.current === "BUSY" || State.isGenerating) { ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'; ctx.fillRect(0, 0, canvas.width, canvas.height); } }; render();
-        },
-        startAudioVisualizer() {
-            const canvas = this.elements.vizCanvas; const ctx = canvas.getContext('2d');
-            const render = () => { requestAnimationFrame(render); if (!State.isSpeaking) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
-                if(AudioModule.analyser) { const data = new Uint8Array(AudioModule.analyser.frequencyBinCount); AudioModule.analyser.getByteFrequencyData(data); ctx.clearRect(0, 0, canvas.width, canvas.height); const barW = (canvas.width / data.length) * 2.2; let x = 0; for (let i = 0; i < data.length; i++) { const h = (data[i] / 255) * canvas.height; const grad = ctx.createLinearGradient(0, canvas.height, 0, 0); grad.addColorStop(0, '#ff00ff'); grad.addColorStop(1, '#330033'); ctx.fillStyle = grad; ctx.fillRect(x, canvas.height - h, Math.ceil(barW), h); x += barW; if (x >= canvas.width) break; } }
-            }; render();
-        },
-        async renderSpeakerList() { if (!this.pipWindow) return; GM_xmlhttpRequest({ method: "GET", url: "http://localhost:50021/speakers", onload: (res) => { const spks = JSON.parse(res.responseText); this.elements.speakerListContainer.textContent = ""; const lbl = this.pipWindow.document.createElement('div'); lbl.textContent = "基本の話者:"; lbl.style.cssText = "margin-bottom:5px; font-weight:bold;"; this.elements.speakerListContainer.appendChild(lbl); const sel = this.pipWindow.document.createElement('select'); Object.assign(sel.style, { width: '100%', padding: '8px', backgroundColor: '#333', color: '#fff', border: '1px solid #555', borderRadius: '4px', fontSize: '14px', cursor: 'pointer' }); spks.forEach(s => s.styles.forEach(st => { const opt = this.pipWindow.document.createElement('option'); opt.value = st.id; opt.textContent = `${s.name} (${st.name})`; if (Settings.data.selectedSpeakerId === st.id) opt.selected = true; sel.appendChild(opt); })); sel.onchange = (e) => { Settings.data.selectedSpeakerId = parseInt(e.target.value, 10); Settings.save(); TTS.clearCache(); }; this.elements.speakerListContainer.appendChild(sel); }}); },
-        createOverlay() {
-            const overlay = document.createElement('div'); Object.assign(overlay.style, { position: 'fixed', top: '0', left: '0', width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.8)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: '2147483647', cursor: 'pointer', textAlign: 'center', backdropFilter: 'blur(5px)' });
-            const wrapper = document.createElement('div'); wrapper.append(Object.assign(document.createElement('h2'), { textContent: "実況システム (Ver 20.90)" }), Object.assign(document.createElement('p'), { textContent: "UIレイアウト最適化モード。" }));
-            overlay.appendChild(wrapper); document.body.appendChild(overlay);
-            overlay.onclick = async () => {
-                try {
-                    document.querySelectorAll('.model-response-text').forEach(el => { el.setAttribute('data-spoken', 'true'); const cleanTxt = GeminiObserver.getCleanTextFast(el); if(cleanTxt) State.spokenSignatures.add(GeminiObserver.getSignature(cleanTxt)); });
-                    this.pipWindow = await window.documentPictureInPicture.requestWindow({ width: Settings.data.pipWidth, height: Settings.data.pipHeight });
-                    this.pipWindow.addEventListener("pagehide", () => { State.autoRestart = false; try { Speech.recognition.stop(); } catch(e){} State.isSpeaking = false; AudioModule.stopMic(); document.body.appendChild(this.elements.mainContainer); this.elements.mainContainer.style.display = 'none'; document.body.appendChild(overlay); overlay.style.display = 'flex'; });
-                    this.pipWindow.addEventListener('resize', () => { Settings.data.pipWidth = this.pipWindow.innerWidth; Settings.data.pipHeight = this.pipWindow.innerHeight; Settings.save(); });
-                    for (const sheet of document.styleSheets) { try { const style = this.pipWindow.document.createElement('style'); let rules = ""; for (const rule of sheet.cssRules) rules += rule.cssText; style.textContent = rules; this.pipWindow.document.head.appendChild(style); } catch (e) {} }
-                    this.pipWindow.document.title = "実況システム"; this.pipWindow.document.body.style.margin = "0"; this.pipWindow.document.body.style.overflow = "hidden";
-                    this.elements.mainContainer.style.display = 'flex'; this.pipWindow.document.body.appendChild(this.elements.mainContainer); overlay.style.display = 'none';
-                    this.renderSpeakerList(); AudioModule.setupMic(); this.startAudioVisualizer(); TTS.preloadCache(); Monitor.start();
-                    setTimeout(() => { State.autoRestart = true; State.autoSleepTimeLeft = Settings.data.autoSleepTime; this.sync(); if(Settings.data.startupMessage) TTS.enqueue(Settings.data.startupMessage, "startupMessage"); GeminiObserver.start(); setTimeout(() => { State.isSystemReady = true; }, 5000); }, 500);
-                } catch (e) { alert("PiP起動失敗: " + e.message); }
-            };
+            if (!state.autoRestart) {
+                micMsg = sd.micMsg_MUTED || "🔕 マイク一時停止"; micCol = "#aaaaaa";
+            } else if (state.isSpeaking || state.current === "BUSY" || state.isGenerating) {
+                micMsg = "🔇 中断ワード待機中"; micCol = "#aaaaaa";
+            } else if (state.hotModeTimeLeft > 0) {
+                micMsg = sd.micMsg_HOTMODE || "🎤 用件をどうぞ！"; micCol = "#ff4444";
+            } else {
+                micMsg = (sd.micMsg_WAITING || "👂 「{wakeWord}」を待機中...").replace("{wakeWord}", sd.wakeWord); micCol = "#00ccff";
+            }
+
+            if (this.elements.micStatusContainer.textContent !== micMsg) {
+                this.elements.micStatusContainer.textContent = micMsg;
+                this.elements.micStatusContainer.style.textShadow = this.getSharpDoubleOutline(micCol);
+            }
         }
-    };
+
+        startMicVisualizer() {
+            const canvas = this.elements.micVizCanvas;
+            const ctx = canvas.getContext('2d');
+            const render = () => {
+                if (!this.app.audio.micAnalyser) return;
+                requestAnimationFrame(render);
+                const data = new Uint8Array(this.app.audio.micAnalyser.frequencyBinCount);
+                this.app.audio.micAnalyser.getByteFrequencyData(data);
+                let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i];
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                const barH = ((sum / data.length) / 255) * canvas.height * 2.02;
+                const grad = ctx.createLinearGradient(0, canvas.height, 0, 0);
+                grad.addColorStop(0, '#ffff00'); grad.addColorStop(1, '#ff0000');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, canvas.height - barH, canvas.width, barH);
+                if (!this.app.state.autoRestart || this.app.state.isSpeaking || this.app.state.current === "BUSY" || this.app.state.isGenerating) {
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+            };
+            render();
+        }
+
+        startSleepTimer() {
+            this.sleepTimer = setInterval(() => {
+                const state = this.app.state;
+                if (!state.autoRestart) return;
+                if (state.isGenerating || state.current === "BUSY" || state.isSpeaking || state.hotModeTimeLeft > 0) {
+                    state.autoSleepTimeLeft = this.app.settings.data.autoSleepTime;
+                } else {
+                    state.autoSleepTimeLeft--;
+                    if (state.autoSleepTimeLeft <= 0) {
+                        state.autoRestart = false;
+                        state.autoSleepTimeLeft = this.app.settings.data.autoSleepTime;
+                        if (this.app.speech.recognition) { try { this.app.speech.recognition.stop(); } catch(e){} }
+                    }
+                }
+                this.sync();
+            }, 1000);
+        }
+
+        async renderSpeakerList() {
+            GM_xmlhttpRequest({
+                method: "GET", url: "http://localhost:50021/speakers",
+                onload: (res) => {
+                    const spks = JSON.parse(res.responseText);
+                    this.elements.speakerListContainer.textContent = "";
+                    const lbl = document.createElement('div');
+                    lbl.textContent = "基本の話者:";
+                    lbl.style.cssText = "margin-bottom:5px; font-weight:bold;";
+                    this.elements.speakerListContainer.appendChild(lbl);
+                    const sel = document.createElement('select');
+                    Object.assign(sel.style, { width: '100%', padding: '8px', backgroundColor: '#333', color: '#fff', border: '1px solid #555', borderRadius: '4px', fontSize: '14px', cursor: 'pointer' });
+                    spks.forEach(s => s.styles.forEach(st => {
+                        const opt = document.createElement('option');
+                        opt.value = st.id; opt.textContent = `${s.name} (${st.name})`;
+                        if (this.app.settings.data.selectedSpeakerId === st.id) opt.selected = true;
+                        sel.appendChild(opt);
+                    }));
+                    sel.onchange = (e) => { this.app.settings.data.selectedSpeakerId = parseInt(e.target.value, 10); this.app.settings.save(); this.app.tts.clearCache(); };
+                    this.elements.speakerListContainer.appendChild(sel);
+                }
+            });
+        }
+    }
 
     // =====================================================================
-    // 9. Gemini Observer
+    // 9. Class: VoiceObserver
     // =====================================================================
-    const GeminiObserver = {
-        getCleanTextFast(element) { if (!element) return ""; const temp = element.cloneNode(true); temp.querySelectorAll('pre, code').forEach(el => el.remove()); temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n'))); temp.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6').forEach(el => el.appendChild(document.createTextNode('\n'))); return (temp.textContent || "").replace(/\n+/g, '\n').trim(); },
-        getTargetText(text) { if (text.length < 50) return text; const idx = text.indexOf('\n', 50); return idx === -1 ? text : text.substring(0, idx + 1); },
-        getSignature(text) { return text ? text.replace(/\s+|[。、！？.,!?"'()「」『』【】\[\]*`~_>\-]/g, '').substring(0, 40) : ""; },
-        lastProcessTime: 0, processTimeout: null,
+    class VoiceObserver {
+        constructor(app) {
+            this.app = app;
+            this.lastProcessTime = 0;
+            this.processTimeout = null;
+        }
+
+        getCleanTextFast(element) {
+            if (!element) return "";
+            const temp = element.cloneNode(true);
+            temp.querySelectorAll('pre, code').forEach(el => el.remove());
+            temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
+            temp.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6').forEach(el => el.appendChild(document.createTextNode('\n')));
+            return (temp.textContent || "").replace(/\n+/g, '\n').trim();
+        }
+
+        // 【修正】読み上げ区切り文字数をスライダーの値に依存させる
+        getTargetText(text) {
+            const limit = this.app.settings.data.readChunkLength || 50;
+            if (text.length < limit) return text;
+            const idx = text.indexOf('\n', limit);
+            return idx === -1 ? text : text.substring(0, idx + 1);
+        }
+
+        getSignature(text) {
+            return text ? text.replace(/\s+|[。、！？.,!?"'()「」『』【】\[\]*`~_>\-]/g, '').substring(0, 40) : "";
+        }
+
         start() {
             const executeProcess = () => {
-                if (!UI.pipWindow) return;
+                const state = this.app.state;
+                const ui = this.app.ui;
+                const audio = this.app.audio;
+                const tts = this.app.tts;
+                const sd = this.app.settings.data;
+
                 const responses = document.querySelectorAll('.model-response-text');
                 const stopButton = document.querySelector('button[aria-label*="停止"], .generating-text, [purpose="r-stop-button"]');
                 const searchingChip = document.querySelector('use-case-chip, .google-search-chip');
                 const checkLimit = Math.max(0, responses.length - 2);
-                for (let i = 0; i < checkLimit; i++) { if (!responses[i].hasAttribute('data-spoken')) { responses[i].setAttribute('data-spoken', 'true'); responses[i].dataset.readLength = responses[i].textContent.length.toString(); } }
+
+                for (let i = 0; i < checkLimit; i++) {
+                    if (!responses[i].hasAttribute('data-spoken')) {
+                        responses[i].setAttribute('data-spoken', 'true');
+                        responses[i].dataset.readLength = responses[i].textContent.length.toString();
+                    }
+                }
+
                 let activeResponse = null;
-                for (let i = responses.length - 1; i >= checkLimit; i--) { const el = responses[i]; if (!el.hasAttribute('data-spoken')) { const fullText = this.getCleanTextFast(el); const sig = this.getSignature(fullText); if (State.spokenSignatures.has(sig) && fullText.length > 0) { el.setAttribute('data-spoken', 'true'); el.dataset.readLength = fullText.length.toString(); continue; } else { activeResponse = el; break; } } }
-                if (activeResponse && !State.isSystemReady) { activeResponse.setAttribute('data-spoken', 'true'); activeResponse.dataset.readLength = activeResponse.textContent.length.toString(); const cleanTxt = this.getCleanTextFast(activeResponse); if(cleanTxt) State.spokenSignatures.add(this.getSignature(cleanTxt)); return; }
+                for (let i = responses.length - 1; i >= checkLimit; i--) {
+                    const el = responses[i];
+                    if (!el.hasAttribute('data-spoken')) {
+                        const fullText = this.getCleanTextFast(el);
+                        const sig = this.getSignature(fullText);
+                        if (state.spokenSignatures.has(sig) && fullText.length > 0) {
+                            el.setAttribute('data-spoken', 'true');
+                            el.dataset.readLength = fullText.length.toString();
+                            continue;
+                        } else {
+                            activeResponse = el; break;
+                        }
+                    }
+                }
+
+                if (activeResponse && !state.isSystemReady) {
+                    activeResponse.setAttribute('data-spoken', 'true');
+                    activeResponse.dataset.readLength = activeResponse.textContent.length.toString();
+                    const cleanTxt = this.getCleanTextFast(activeResponse);
+                    if(cleanTxt) state.spokenSignatures.add(this.getSignature(cleanTxt));
+                    return;
+                }
+
                 const isCurrentlyGenerating = !!stopButton;
-                if (!isCurrentlyGenerating && searchingChip && !State.isGenerating) { State.current = "SEARCHING"; UI.sync(); }
-                else if (!isCurrentlyGenerating && !searchingChip && !State.isGenerating) { State.current = "IDLE"; UI.sync(); }
-                if (isCurrentlyGenerating && !State.isGenerating) { State.isGenerating = true; State.current = "BUSY"; if (!State.autoRestart) State.autoRestart = true; if (activeResponse) { activeResponse.dataset.readLength = "0"; State.generatingTextLength = 0; } AudioModule.startTypingSound(); UI.sync(); }
-                if (State.isGenerating && activeResponse) {
-                    const fullText = this.getCleanTextFast(activeResponse); State.generatingTextLength = fullText.length;
-                    if (!isCurrentlyGenerating && fullText.length < 20 && (fullText.includes("お役に") || fullText.includes("承れません"))) { State.current = "BLOCKED"; UI.sync(); }
-                    const targetText = this.getTargetText(fullText); let readLen = parseInt(activeResponse.dataset.readLength || "0", 10);
+
+                if (!isCurrentlyGenerating && searchingChip && !state.isGenerating) {
+                    state.current = "SEARCHING"; ui.sync();
+                } else if (!isCurrentlyGenerating && !searchingChip && !state.isGenerating) {
+                    state.current = "IDLE"; ui.sync();
+                }
+
+                if (isCurrentlyGenerating && !state.isGenerating) {
+                    state.isGenerating = true;
+                    state.current = "BUSY";
+                    if (!state.autoRestart) state.autoRestart = true;
+                    if (activeResponse) { activeResponse.dataset.readLength = "0"; state.generatingTextLength = 0; }
+                    audio.startTypingSound();
+                    ui.sync();
+                }
+
+                if (state.isGenerating && activeResponse) {
+                    const fullText = this.getCleanTextFast(activeResponse);
+                    state.generatingTextLength = fullText.length;
+                    if (!isCurrentlyGenerating && fullText.length < 20 && (fullText.includes("お役に") || fullText.includes("承れません"))) {
+                        state.current = "BLOCKED"; ui.sync();
+                    }
+                    const targetText = this.getTargetText(fullText);
+                    let readLen = parseInt(activeResponse.dataset.readLength || "0", 10);
+
                     if (targetText.length > readLen) {
-                        const unreadText = targetText.substring(readLen); const sentenceRegex = /^[^。！？\n]*[。！？\n]+[」』）】］"']*/;
+                        const unreadText = targetText.substring(readLen);
+                        const sentenceRegex = /^[^。！？\n]*[。！？\n]+[」』）】］"']*/;
                         let match, currentUnread = unreadText, newlyReadLen = 0;
-                        while ((match = currentUnread.match(sentenceRegex)) !== null) { TTS.enqueue(match[0]); newlyReadLen += match[0].length; currentUnread = currentUnread.substring(match[0].length); }
+                        while ((match = currentUnread.match(sentenceRegex)) !== null) {
+                            tts.enqueue(match[0]);
+                            newlyReadLen += match[0].length;
+                            currentUnread = currentUnread.substring(match[0].length);
+                        }
                         if (newlyReadLen > 0) activeResponse.dataset.readLength = (readLen + newlyReadLen).toString();
                     }
                 }
-                if (!isCurrentlyGenerating && State.isGenerating) {
-                    State.isGenerating = false; State.generatingTextLength = 0; State.current = "IDLE";
-                    AudioModule.stopTypingSound(); AudioModule.playBeep();
-                    State.autoSleepTimeLeft = Settings.data.autoSleepTime;
-                    if (!State.isSpeaking && TTS.queue.length === 0 && Settings.data.finishedThinkingMessage) TTS.playInstantly(Settings.data.finishedThinkingMessage, "finishedThinkingMessage");
-                    if (activeResponse) {
-                        const fullText = this.getCleanTextFast(activeResponse); const targetText = this.getTargetText(fullText); let readLen = parseInt(activeResponse.dataset.readLength || "0", 10);
-                        if (targetText.length > readLen) TTS.enqueue(targetText.substring(readLen).trim());
-                        activeResponse.dataset.readLength = fullText.length.toString(); activeResponse.setAttribute('data-spoken', 'true');
-                        if (fullText.length > 0) { State.spokenSignatures.add(this.getSignature(fullText)); }
+
+                if (!isCurrentlyGenerating && state.isGenerating) {
+                    state.isGenerating = false;
+                    state.generatingTextLength = 0;
+                    state.current = "IDLE";
+                    audio.stopTypingSound();
+                    audio.playBeep();
+                    state.autoSleepTimeLeft = sd.autoSleepTime;
+
+                    if (!state.isSpeaking && tts.queue.length === 0 && sd.finishedThinkingMessage) {
+                        tts.playInstantly(sd.finishedThinkingMessage, "finishedThinkingMessage");
                     }
-                    UI.sync();
+                    if (activeResponse) {
+                        const fullText = this.getCleanTextFast(activeResponse);
+                        const targetText = this.getTargetText(fullText);
+                        let readLen = parseInt(activeResponse.dataset.readLength || "0", 10);
+                        if (targetText.length > readLen) tts.enqueue(targetText.substring(readLen).trim());
+                        activeResponse.dataset.readLength = fullText.length.toString();
+                        activeResponse.setAttribute('data-spoken', 'true');
+                        if (fullText.length > 0) { state.spokenSignatures.add(this.getSignature(fullText)); }
+                    }
+                    ui.sync();
                 }
             };
-            const observer = new MutationObserver(() => { const now = Date.now(); const stopButton = document.querySelector('button[aria-label*="停止"], .generating-text, [purpose="r-stop-button"]'); if (State.isGenerating && !stopButton) { if (this.processTimeout) clearTimeout(this.processTimeout); this.lastProcessTime = now; executeProcess(); return; } if (now - this.lastProcessTime > 150) { if (this.processTimeout) clearTimeout(this.processTimeout); this.lastProcessTime = now; executeProcess(); } else if (!this.processTimeout) { this.processTimeout = setTimeout(() => { this.lastProcessTime = Date.now(); executeProcess(); }, 150); } });
+
+            const observer = new MutationObserver(() => {
+                const now = Date.now();
+                const stopButton = document.querySelector('button[aria-label*="停止"], .generating-text, [purpose="r-stop-button"]');
+                if (this.app.state.isGenerating && !stopButton) {
+                    if (this.processTimeout) clearTimeout(this.processTimeout);
+                    this.lastProcessTime = now;
+                    executeProcess();
+                    return;
+                }
+                if (now - this.lastProcessTime > 150) {
+                    if (this.processTimeout) clearTimeout(this.processTimeout);
+                    this.lastProcessTime = now;
+                    executeProcess();
+                } else if (!this.processTimeout) {
+                    this.processTimeout = setTimeout(() => {
+                        this.lastProcessTime = Date.now();
+                        executeProcess();
+                    }, 150);
+                }
+            });
             observer.observe(document.body, { childList: true, subtree: true });
         }
-    };
+    }
 
-    Settings.init(); UI.build(); Speech.init(); UI.createOverlay();
+    // =====================================================================
+    // 10. Class: VoiceApp (Main Controller)
+    // =====================================================================
+    class VoiceApp {
+        constructor() {
+            this.settings = new VoiceSettings();
+            this.state = new VoiceState();
+            this.audio = new VoiceAudio(this);
+            this.tts = new VoiceTTS(this);
+            this.speech = new VoiceSpeech(this);
+            this.ui = new VoiceUI(this);
+            this.observer = new VoiceObserver(this);
+            this.imageCache = new VoiceImageCache(this);
+        }
+
+        createBootUI() {
+            const bootBtn = document.createElement('button');
+            bootBtn.textContent = "▶ 実況システム起動 (Ver 22.10)";
+            Object.assign(bootBtn.style, {
+                position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999',
+                padding: '12px 24px', backgroundColor: '#009900', color: '#fff',
+                border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer',
+                fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
+                transition: 'transform 0.2s'
+            });
+            bootBtn.onmouseover = () => bootBtn.style.transform = 'scale(1.05)';
+            bootBtn.onmouseout = () => bootBtn.style.transform = 'scale(1)';
+
+            document.body.appendChild(bootBtn);
+
+            bootBtn.onclick = async () => {
+                bootBtn.remove();
+                await this.init();
+            };
+        }
+
+        async init() {
+            this.settings.init();
+            const panel = this.ui.build();
+            document.body.appendChild(panel);
+
+            this.speech.init();
+            this.ui.renderSpeakerList();
+
+            try { await this.audio.setupMic(); } catch (e) {}
+
+            this.tts.preloadCache();
+            await this.imageCache.preloadAll();
+
+            setTimeout(() => {
+                this.state.autoRestart = true;
+                this.state.autoSleepTimeLeft = this.settings.data.autoSleepTime;
+                this.ui.sync();
+                if(this.settings.data.startupMessage) this.tts.enqueue(this.settings.data.startupMessage, "startupMessage");
+                this.observer.start();
+                setTimeout(() => { this.state.isSystemReady = true; }, 5000);
+            }, 500);
+        }
+    }
+
+    // =====================================================================
+    // Boot
+    // =====================================================================
+    const app = new VoiceApp();
+    app.createBootUI();
+
 })();
