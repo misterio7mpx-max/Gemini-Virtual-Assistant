@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini Voice Control (Ver 22.27 - Refactored UI & Core)
+// @name         Gemini Voice Control (Ver 23.00 - Perfect Reading Filter)
 // @namespace    http://tampermonkey.net/
-// @version      22.27
-// @description  独立リップシンク、字幕フキダシ等。22.26をベースにアイコン刷新、ツールチップ、設定パネル最適化を適用。
+// @version      23.00
+// @description  URL、UIテキスト（スプレッドシート等）、引用番号、長すぎる英数字の読み上げ・字幕除外機能を実装。
 // @author       AI Assistant
 // @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
@@ -38,9 +38,9 @@
                 pipWidth: 336, pipHeight: 600, savedPipWidth: 336, savedPipHeight: 600,
                 savedPipLeft: undefined, savedPipTop: undefined, savedChatOffset: 0,
                 heartSize: 84, heartSizeRandom: 30, heartPosRandom: 60,
-                fontSize_status: 24, fontSize_micStatus: 14, fontSize_transcript: 14, fontSize_subtitle: 16,
+                fontSize_status: 24, fontSize_transcript: 14, fontSize_subtitle: 16,
                 icon_transcript: "🗣️",
-                micMsg_WAITING: "👂 「{wakeWord}」を待機中...", micMsg_HOTMODE: "🎤 用件をどうぞ！", micMsg_MUTED: "🔕 マイク一時停止",
+                micMsg_WAITING: "👂待機中", micMsg_HOTMODE: "🎤受付中", micMsg_MUTED: "🔕停止中",
                 speed_IDLE_1: 0.5, speed_IDLE_2: 0.5, speed_BUSY_1: 0.5, speed_BUSY_2: 0.5, speed_BUSY_3: 0.5,
                 speed_STOPPED_1: 0.5, speed_STOPPED_2: 0.5, speed_SEARCHING_1: 0.5, speed_SEARCHING_2: 0.5,
                 speed_LISTENING_1: 0.5, speed_LISTENING_2: 0.5, speed_BLOCKED_1: 0.5, speed_BLOCKED_2: 0.5,
@@ -61,9 +61,9 @@
                 style_clearReply: "default", style_waitReply: "default", style_startupMessage: "default",
                 style_finishedThinkingMessage: "default", style_resumeMessage: "default",
                 style_reactionSpeechSurprised: "default", style_reactionSpeechSad: "default", style_reactionSpeechAngry: "default",
-                txt_IDLE: "システム待機中", txt_BUSY: "思考中...", txt_STOPPED: "システム停止中",
-                txt_SEARCHING: "接続確認中...", txt_LISTENING: "聞き取り中...", txt_BLOCKED: "困惑中...",
-                txt_HOTMODE: "受付中", txt_SPEAKING: "発話中...",
+                txt_IDLE: "待機中", txt_BUSY: "思考中...", txt_STOPPED: "停止中",
+                txt_SEARCHING: "確認中...", txt_LISTENING: "聞き取り中", txt_BLOCKED: "困惑中",
+                txt_HOTMODE: "受付中", txt_SPEAKING: "発話中",
                 icon_IDLE: "🐰", icon_BUSY: "🔄", icon_STOPPED: "💤", icon_SEARCHING: "📡",
                 icon_LISTENING: "👂", icon_BLOCKED: "😰", icon_HOTMODE: "🔥", icon_SPEAKING: "🎵"
             };
@@ -458,6 +458,7 @@
             this.app = app; this.elements = {}; this.shadowCache = {}; this.sleepTimer = null;
             this.baseFont = '"UD デジタル 教科書体 NK", "UD Digital Kyokasho-tai NK", sans-serif';
             this.transcriptClearTimer = null; this.isSlidingChat = false; this.subtitleTimer = null;
+            this.isResizing = false; this.resizeDir = '';
         }
 
         ce(tag, style = {}, props = {}, ...children) {
@@ -531,8 +532,8 @@
                 .voice-slider-item input { width: 100%; margin: 0; }
                 .voice-slider-header { display: flex; justify-content: space-between; }
                 hr { border-color: #444; margin: 10px 0; }
-                .subtitle-bubble::before { content: ""; position: absolute; bottom: -14px; left: 30px; border-width: 14px 10px 0; border-style: solid; border-color: #333 transparent transparent transparent; display: block; width: 0; }
-                .subtitle-bubble::after { content: ""; position: absolute; bottom: -11px; left: 32px; border-width: 12px 8px 0; border-style: solid; border-color: #fff transparent transparent transparent; display: block; width: 0; }
+                .subtitle-bubble::before { content: ""; position: absolute; bottom: -28px; left: 60px; border-width: 28px 20px 0; border-style: solid; border-color: #333 transparent transparent transparent; display: block; width: 0; }
+                .subtitle-bubble::after { content: ""; position: absolute; bottom: -23px; left: 64px; border-width: 24px 16px 0; border-style: solid; border-color: #f8c8c9 transparent transparent transparent; display: block; width: 0; }
             `);
             document.head.appendChild(customStyles);
 
@@ -544,27 +545,66 @@
                 ...(sd.savedPipLeft !== undefined ? {left: `${sd.savedPipLeft}px`, top: `${sd.savedPipTop}px`} : {bottom: '20px', right: '20px'})
             });
 
-            this.elements.resizeGrip = ce('div', { position: 'absolute', top: '0', left: '0', width: '16px', height: '16px', cursor: 'nwse-resize', zIndex: '101', background: 'transparent' });
             this.elements.dragHeader = ce('div', { width: '100%', height: '24px', background: '#111', cursor: 'grab', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#aaa', fontSize: '11px', fontWeight: 'bold', flexShrink: '0', userSelect: 'none', borderBottom: '1px solid #333' }, {}, "≡ 埋め込み実況システム ≡");
+
+            ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].forEach(dir => {
+                const grip = ce('div', { position: 'absolute', zIndex: '101', background: 'transparent', cursor: `${dir}-resize` });
+                const thickness = '10px';
+                if (dir.includes('n')) { grip.style.top = '0'; grip.style.height = thickness; }
+                if (dir.includes('s')) { grip.style.bottom = '0'; grip.style.height = thickness; }
+                if (dir.includes('e')) { grip.style.right = '0'; grip.style.width = thickness; }
+                if (dir.includes('w')) { grip.style.left = '0'; grip.style.width = thickness; }
+                
+                if (dir === 'n' || dir === 's') { grip.style.left = thickness; grip.style.right = thickness; }
+                else if (dir === 'e' || dir === 'w') { grip.style.top = thickness; grip.style.bottom = thickness; }
+                else { grip.style.width = thickness; grip.style.height = thickness; }
+
+                grip.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    this.isResizing = true;
+                    this.resizeDir = dir;
+                    this.resizeStartX = e.clientX;
+                    this.resizeStartY = e.clientY;
+                    const rect = panel.getBoundingClientRect();
+                    this.resizeStartWidth = rect.width;
+                    this.resizeStartHeight = rect.height;
+                    this.resizeStartLeft = rect.left;
+                    this.resizeStartTop = rect.top;
+                    panel.style.right = 'auto'; panel.style.bottom = 'auto';
+                    panel.style.left = this.resizeStartLeft + 'px';
+                    panel.style.top = this.resizeStartTop + 'px';
+                    document.body.style.cursor = `${dir}-resize`;
+                });
+                panel.appendChild(grip);
+            });
 
             this.elements.sleepBarFill = ce('div', { width: '100%', height: '100%', background: '#00ccff', transition: 'width 1s linear, background-color 0.3s' });
             this.elements.hotBarFill = ce('div', { width: '0%', height: '100%', background: '#ff4444', transition: 'width 1s linear' });
 
-            this.elements.micStatusContainer = ce('div', { fontSize: `${sd.fontSize_micStatus}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, height: `${sd.fontSize_status}px`, display: 'flex', alignItems: 'center' });
-            this.elements.transcriptText = ce('div', { fontSize: `${sd.fontSize_transcript}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1.2', minHeight: '1.2em' });
+            this.elements.micStatusContainer = ce('div', { fontSize: `${sd.fontSize_status}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1', display: 'flex', alignItems: 'center' });
             this.elements.systemIcon = ce('div', { fontSize: `${sd.fontSize_status}px`, color: '#000000', willChange: 'transform' }, { className: "icon-spin" });
             this.elements.statusTextValue = ce('div', { fontSize: `${sd.fontSize_status}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1' });
+            
+            const statusRightWrap = ce('div', { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px' }, {},
+                this.elements.systemIcon,
+                this.elements.statusTextValue
+            );
 
-            this.elements.subtitleContainer = ce('div', { position: 'absolute', top: '70px', left: '15px', right: '15px', backgroundColor: '#ffffff', color: '#000000', borderRadius: '8px', padding: '8px 12px', fontSize: `${sd.fontSize_subtitle || 16}px`, fontWeight: 'bold', fontFamily: this.baseFont, zIndex: '25', pointerEvents: 'none', display: 'block', border: '2px solid #333', wordBreak: 'break-word', lineHeight: '1.4', minHeight: '1.4em' }, { className: 'subtitle-bubble' });
+            const statusRow = ce('div', { display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }, {},
+                this.elements.micStatusContainer,
+                statusRightWrap
+            );
+
+            this.elements.transcriptText = ce('div', { fontSize: `${sd.fontSize_transcript}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1.2', minHeight: '1.2em' });
+
+            this.elements.subtitleContainer = ce('div', { position: 'absolute', top: '47px', left: '15px', right: '15px', backgroundImage: 'linear-gradient(to bottom, #fdf7ff, #f8c8c9)', color: '#000000', borderRadius: '8px', padding: '8px 12px', fontSize: `${sd.fontSize_subtitle || 16}px`, fontWeight: 'bold', fontFamily: this.baseFont, zIndex: '25', pointerEvents: 'none', display: 'block', border: '2px solid #333', wordBreak: 'break-word', lineHeight: '1.4', minHeight: '1.4em' }, { className: 'subtitle-bubble' });
             this.elements.displayArea = ce('div', { width: '100%', flexGrow: '1', backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center bottom', backgroundColor: 'transparent', transform: 'translateZ(0)', willChange: 'background-image' });
             this.elements.fakeChatInput = ce('textarea', { width: '100%', height: '40px', backgroundColor: 'rgba(0, 0, 0, 0.7)', color: '#ffffff', border: 'none', borderTop: '1px solid #555', padding: '5px 8px', fontSize: '12px', fontFamily: this.baseFont, resize: 'none', boxSizing: 'border-box', outline: 'none', flexShrink: '0', zIndex: '50' }, { placeholder: "音声認識バッファ..." });
 
             this.elements.micVizCanvas = ce('canvas', { width: '8px', height: '100%', background: '#222', borderLeft: '1px solid #444', flexShrink: '0', transform: 'translateZ(0)' }, { width: 8, height: 600 });
 
-            const btnStyle = { width: '50px', height: '50px', border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: '30px', fontWeight: 'bold', padding: '0', fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif', textShadow: '2px 2px 4px rgba(0,0,0,0.8), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' };
+            const btnStyle = { width: '46px', height: '46px', border: '2px solid rgb(50, 50, 50)', borderRadius: '8px', background: '#000000', color: '#fff', cursor: 'pointer', fontSize: '24px', fontWeight: 'bold', padding: '0', fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif', textShadow: 'none' };
 
-            // 【UI直感化・再配置の適用部分】
-            this.elements.btnMinimize = ce('button', { ...btnStyle, fontSize: '25px' }, { title: "縮小" }, "▼");
             this.elements.btnReload = ce('button', btnStyle, { title: "画像リロード" }, "🔃");
             this.elements.btnSlider = ce('button', { ...btnStyle, cursor: 'ew-resize' }, { title: "チャット移動" }, "🎚️");
             this.elements.btn1 = ce('button', btnStyle, { title: "基本設定" }, "⚙");
@@ -572,7 +612,9 @@
             this.elements.btn3 = ce('button', btnStyle, { title: "立ち絵" }, "👤");
             this.elements.btn4 = ce('button', btnStyle, { title: "リアクション" }, "🫂");
             this.elements.btn5 = ce('button', btnStyle, { title: "表示設定" }, "🪧");
-            this.elements.btnPower = ce('button', { ...btnStyle, fontSize: '40px', marginTop: 'auto', marginBottom: '25px' }, { title: "システム電源" }, "⏻");
+
+            this.elements.btnPower = ce('button', { ...btnStyle, fontSize: '30px', marginTop: 'auto' }, { title: "システム電源" }, "⏻");
+            this.elements.btnMinimize = ce('button', { ...btnStyle, fontSize: '20px', marginBottom: '15px' }, { title: "縮小" }, "▼");
 
             this.elements.contentWrapper = ce('div', { position: 'relative', flexGrow: '1', height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }, {},
                 ce('div', { position: 'absolute', top: '0', left: '0', width: '100%', display: 'flex', flexDirection: 'column', zIndex: '100' }, {},
@@ -580,9 +622,11 @@
                     ce('div', { width: '100%', height: '5px', background: '#333' }, {}, this.elements.hotBarFill)
                 ),
                 this.elements.displayArea,
-                ce('div', { position: 'absolute', top: '15px', left: '15px', right: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', zIndex: '25', pointerEvents: 'none' }, {},
-                    ce('div', { display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-start' }, {}, this.elements.micStatusContainer, this.elements.transcriptText),
-                    ce('div', { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }, {}, this.elements.systemIcon, this.elements.statusTextValue)
+                ce('div', { position: 'absolute', top: '15px', left: '15px', right: '15px', display: 'flex', flexDirection: 'row', zIndex: '25', pointerEvents: 'none' }, {},
+                    statusRow
+                ),
+                ce('div', { position: 'absolute', bottom: '45px', left: '15px', right: '15px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', zIndex: '25', pointerEvents: 'none' }, {},
+                    this.elements.transcriptText
                 ),
                 this.elements.subtitleContainer,
                 this.elements.fakeChatInput
@@ -591,14 +635,15 @@
             this.elements.mainContainer = ce('div', { position: 'relative', width: '100%', height: 'calc(100% - 24px)', fontFamily: 'sans-serif', overflow: 'hidden', boxSizing: 'border-box', display: 'flex', flexDirection: 'row' }, {},
                 this.elements.contentWrapper,
                 this.elements.micVizCanvas,
-                ce('div', { width: '60px', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '15px', paddingBottom: '15px', gap: '10px', flexShrink: '0', backgroundColor: '#000', zIndex: '30' }, {},
-                    this.elements.btnMinimize, this.elements.btnReload, this.elements.btnSlider,
-                    this.elements.btn1, this.elements.btn2, this.elements.btn3, this.elements.btn4, this.elements.btn5, this.elements.btnPower
+                ce('div', { width: '60px', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '15px', paddingBottom: '0px', gap: '8px', flexShrink: '0', backgroundColor: '#000', zIndex: '30' }, {},
+                    this.elements.btnReload, this.elements.btnSlider,
+                    this.elements.btn1, this.elements.btn2, this.elements.btn3, this.elements.btn4, this.elements.btn5,
+                    this.elements.btnPower, this.elements.btnMinimize
                 )
             );
 
             this.elements.panel = panel;
-            panel.append(this.elements.resizeGrip, this.elements.dragHeader, this.elements.mainContainer);
+            panel.append(this.elements.dragHeader, this.elements.mainContainer);
             this.buildSettingsPanels(); this.attachEvents(); this.startSleepTimer();
             return panel;
         }
@@ -607,10 +652,9 @@
             const sd = this.app.settings.data; const bgData = this.app.settings.bgData; const ce = this.ce.bind(this);
             const createPanel = (id) => {
                 const scroll = ce('div', { flexGrow: '1', overflowY: 'auto', paddingRight: '5px' });
-                // 【改修】横幅を calc(100% - 60px) に調整
                 const p = ce('div', { position: 'absolute', top: '0', left: '0', width: 'calc(100% - 60px)', height: '100%', backgroundColor: 'rgba(15, 15, 15, 0.98)', color: '#fff', zIndex: '100', display: 'none', flexDirection: 'column', padding: '20px', boxSizing: 'border-box' }, {},
                     scroll,
-                    ce('button', { position: 'absolute', top: '15px', right: '7px', width: '36px', height: '36px', borderRadius: '50%', background: '#333', border: '1px solid #ffccff', color: '#fff', zIndex: '110', cursor: 'pointer' }, { onclick: (e) => { e.stopPropagation(); p.style.display = 'none'; } }, "✕")
+                    ce('button', { position: 'absolute', top: '15px', right: '7px', width: '36px', height: '36px', borderRadius: '50%', background: '#333', border: '1px solid #ffccff', color: '#fff', zIndex: '110', cursor: 'pointer' }, { onclick: (e) => { e.stopPropagation(); this.app.audio.playBeep(); p.style.display = 'none'; } }, "✕")
                 );
                 this.elements.mainContainer.appendChild(p); this.elements[`panel${id}`] = p; return scroll;
             };
@@ -694,7 +738,7 @@
 
             const p5 = createPanel(5);
             [{l:"待機中 (IDLE)", t:"txt_IDLE", i:"icon_IDLE"}, {l:"思考中 (BUSY)", t:"txt_BUSY", i:"icon_BUSY"}, {l:"発話中 (SPEAKING)", t:"txt_SPEAKING", i:"icon_SPEAKING"}, {l:"停止中 (STOPPED)", t:"txt_STOPPED", i:"icon_STOPPED"}, {l:"接続中 (SEARCHING)", t:"txt_SEARCHING", i:"icon_SEARCHING"}, {l:"聞き取り中 (LISTENING)", t:"txt_LISTENING", i:"icon_LISTENING"}, {l:"困惑 (BLOCKED)", t:"txt_BLOCKED", i:"icon_BLOCKED"}, {l:"受付中 (HOTMODE)", t:"txt_HOTMODE", i:"icon_HOTMODE"}].forEach(o => p5.appendChild(h.statRow(o.l, o.t, o.i)));
-            p5.append(h.hr(), h.num("ステータスの文字サイズ (px)", "fontSize_status", v => { if(this.elements.statusTextValue){ this.elements.statusTextValue.style.fontSize = v+'px'; this.elements.systemIcon.style.fontSize = v+'px'; } }), h.num("マイクステータスの文字サイズ (px)", "fontSize_micStatus", v => { if(this.elements.micStatusContainer) this.elements.micStatusContainer.style.fontSize = v+'px'; }), h.num("音声入力の文字サイズ (px)", "fontSize_transcript", v => { if(this.elements.transcriptText) this.elements.transcriptText.style.fontSize = v+'px'; }), h.num("字幕の文字サイズ (px)", "fontSize_subtitle", v => { if(this.elements.subtitleContainer) this.elements.subtitleContainer.style.fontSize = v+'px'; }), h.hr(), h.txt("音声入力のアイコン", "icon_transcript", "🗣️"), h.txt("マイク待機中 ({wakeWord}使用可)", "micMsg_WAITING", ""), h.txt("マイク受付中テキスト", "micMsg_HOTMODE", ""), h.txt("マイク停止中テキスト", "micMsg_MUTED", ""));
+            p5.append(h.hr(), h.num("ステータス表示の文字サイズ (px)", "fontSize_status", v => { if(this.elements.statusTextValue){ this.elements.statusTextValue.style.fontSize = v+'px'; this.elements.systemIcon.style.fontSize = v+'px'; this.elements.micStatusContainer.style.fontSize = v+'px'; } }), h.num("音声入力の文字サイズ (px)", "fontSize_transcript", v => { if(this.elements.transcriptText) this.elements.transcriptText.style.fontSize = v+'px'; }), h.num("字幕の文字サイズ (px)", "fontSize_subtitle", v => { if(this.elements.subtitleContainer) this.elements.subtitleContainer.style.fontSize = v+'px'; }), h.hr(), h.txt("音声入力のアイコン", "icon_transcript", "🗣️"), h.txt("マイク待機中テキスト", "micMsg_WAITING", "👂待機中"), h.txt("マイク受付中テキスト", "micMsg_HOTMODE", "🎤受付中"), h.txt("マイク停止中テキスト", "micMsg_MUTED", "🔕停止中"));
         }
 
         attachEvents() {
@@ -708,29 +752,30 @@
             }, true);
 
             window.addEventListener('resize', () => this.enforceBounds());
-            let isDragging = false, dragStartX, dragStartY, initialLeft, initialTop;
-            let isResizing = false, resizeStartX, resizeStartY, resizeStartWidth, resizeStartHeight, resizeStartLeft, resizeStartTop;
 
             els.dragHeader.addEventListener('mousedown', (e) => {
-                isDragging = true; dragStartX = e.clientX; dragStartY = e.clientY; const rect = els.panel.getBoundingClientRect();
-                initialLeft = rect.left; initialTop = rect.top; els.panel.style.right = 'auto'; els.panel.style.bottom = 'auto'; els.panel.style.left = initialLeft + 'px'; els.panel.style.top = initialTop + 'px'; els.dragHeader.style.cursor = 'grabbing';
-            });
-            els.resizeGrip.addEventListener('mousedown', (e) => {
-                e.stopPropagation(); isResizing = true; resizeStartX = e.clientX; resizeStartY = e.clientY; const rect = els.panel.getBoundingClientRect();
-                resizeStartWidth = rect.width; resizeStartHeight = rect.height; resizeStartLeft = rect.left; resizeStartTop = rect.top; els.panel.style.right = 'auto'; els.panel.style.bottom = 'auto'; els.panel.style.left = resizeStartLeft + 'px'; els.panel.style.top = resizeStartTop + 'px'; document.body.style.cursor = 'nwse-resize';
+                this.isDragging = true; this.dragStartX = e.clientX; this.dragStartY = e.clientY; const rect = els.panel.getBoundingClientRect();
+                this.initialLeft = rect.left; this.initialTop = rect.top; els.panel.style.right = 'auto'; els.panel.style.bottom = 'auto'; els.panel.style.left = this.initialLeft + 'px'; els.panel.style.top = this.initialTop + 'px'; els.dragHeader.style.cursor = 'grabbing';
             });
             els.btnSlider.addEventListener('mousedown', (e) => { e.stopPropagation(); this.isSlidingChat = true; this.slideStartX = e.clientX; els.btnSlider.style.cursor = 'ew-resize'; document.body.style.cursor = 'ew-resize'; });
 
             document.addEventListener('mousemove', (e) => {
-                if (isDragging) {
-                    els.panel.style.left = Math.max(0, Math.min(initialLeft + (e.clientX - dragStartX), window.innerWidth - els.panel.offsetWidth)) + 'px';
-                    els.panel.style.top = Math.max(0, Math.min(initialTop + (e.clientY - dragStartY), window.innerHeight - els.panel.offsetHeight)) + 'px';
+                if (this.isDragging) {
+                    els.panel.style.left = Math.max(0, Math.min(this.initialLeft + (e.clientX - this.dragStartX), window.innerWidth - els.panel.offsetWidth)) + 'px';
+                    els.panel.style.top = Math.max(0, Math.min(this.initialTop + (e.clientY - this.dragStartY), window.innerHeight - els.panel.offsetHeight)) + 'px';
                 }
-                if (isResizing) {
-                    let dX = e.clientX - resizeStartX, dY = e.clientY - resizeStartY;
-                    let nW = resizeStartWidth - dX, nH = resizeStartHeight - dY, nL = Math.max(0, resizeStartLeft + dX), nT = Math.max(0, resizeStartTop + dY);
-                    nW = (resizeStartLeft + resizeStartWidth) - nL; nH = (resizeStartTop + resizeStartHeight) - nT;
-                    if (nW < 200) { nW = 200; nL = (resizeStartLeft + resizeStartWidth) - 200; } if (nH < 300) { nH = 300; nT = (resizeStartTop + resizeStartHeight) - 300; }
+                if (this.isResizing) {
+                    let dX = e.clientX - this.resizeStartX, dY = e.clientY - this.resizeStartY;
+                    let nW = this.resizeStartWidth, nH = this.resizeStartHeight, nL = this.resizeStartLeft, nT = this.resizeStartTop;
+                    
+                    if (this.resizeDir.includes('e')) nW += dX;
+                    if (this.resizeDir.includes('w')) { nW -= dX; nL += dX; }
+                    if (this.resizeDir.includes('s')) nH += dY;
+                    if (this.resizeDir.includes('n')) { nH -= dY; nT += dY; }
+
+                    if (nW < 200) { if (this.resizeDir.includes('w')) nL -= (200 - nW); nW = 200; }
+                    if (nH < 300) { if (this.resizeDir.includes('n')) nT -= (300 - nH); nH = 300; }
+                    
                     els.panel.style.width = nW + 'px'; els.panel.style.height = nH + 'px'; els.panel.style.left = nL + 'px'; els.panel.style.top = nT + 'px';
                 }
                 if (this.isSlidingChat) {
@@ -741,16 +786,17 @@
             });
 
             document.addEventListener('mouseup', () => {
-                if (isDragging) { isDragging = false; els.dragHeader.style.cursor = 'grab'; }
-                if (isResizing) { isResizing = false; document.body.style.cursor = 'default'; }
+                if (this.isDragging) { this.isDragging = false; els.dragHeader.style.cursor = 'grab'; }
+                if (this.isResizing) { this.isResizing = false; document.body.style.cursor = 'default'; }
                 if (this.isSlidingChat) { this.isSlidingChat = false; sd.savedChatOffset = this.currentChatOffset; this.app.settings.save(); els.btnSlider.style.cursor = 'ew-resize'; document.body.style.cursor = 'default'; }
             });
 
             els.btnMinimize.onclick = (e) => {
-                e.stopPropagation(); state.autoRestart = false; if (state.isSpeaking) this.app.tts.stop();
+                e.stopPropagation(); this.app.audio.playBeep(); state.autoRestart = false; if (state.isSpeaking) this.app.tts.stop();
                 if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer); this.sync();
                 els.panel.style.display = 'none';
-                const rBtn = this.ce('button', { position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999', padding: '12px 24px', backgroundColor: '#009900', color: '#fff', border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)', transition: 'transform 0.2s' }, { onmouseover: () => rBtn.style.transform = 'scale(1.05)', onmouseout: () => rBtn.style.transform = 'scale(1)', onclick: () => { rBtn.remove(); els.panel.style.display = 'flex'; this.enforceBounds(); state.autoRestart = true; state.autoSleepTimeLeft = sd.autoSleepTime; this.sync(); } }, "▶ 実況システム復帰");
+                
+                const rBtn = this.ce('button', { position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999', padding: '12px 24px', backgroundColor: sd.bgColor, color: '#fff', border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)', transition: 'transform 0.2s' }, { onmouseover: () => rBtn.style.transform = 'scale(1.05)', onmouseout: () => rBtn.style.transform = 'scale(1)', onclick: () => { rBtn.remove(); els.panel.style.display = 'flex'; this.enforceBounds(); state.autoRestart = true; state.autoSleepTimeLeft = sd.autoSleepTime; this.sync(); } }, "▶ 実況システム復帰");
                 document.body.appendChild(rBtn);
             };
 
@@ -769,8 +815,18 @@
                 }, 5000);
             };
 
-            [1,2,3,4,5].forEach(i => els[`btn${i}`].onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); els[`panel${i}`].style.display = 'flex'; });
-            els.btnPower.onclick = (e) => { e.stopPropagation(); this.hideAllPanels(); state.autoRestart = !state.autoRestart; if (!state.autoRestart && state.isSpeaking) this.app.tts.stop(); if (state.hotModeTimeLeft > 0) { state.hotModeTimeLeft = 0; if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer); } state.autoSleepTimeLeft = sd.autoSleepTime; this.sync(); };
+            [1,2,3,4,5].forEach(i => els[`btn${i}`].onclick = (e) => {
+                e.stopPropagation();
+                this.app.audio.playBeep();
+                const targetPanel = els[`panel${i}`];
+                const isShowing = targetPanel.style.display === 'flex';
+                this.hideAllPanels();
+                if (!isShowing) {
+                    targetPanel.style.display = 'flex';
+                }
+            });
+
+            els.btnPower.onclick = (e) => { e.stopPropagation(); this.app.audio.playBeep(); this.hideAllPanels(); state.autoRestart = !state.autoRestart; if (!state.autoRestart && state.isSpeaking) this.app.tts.stop(); if (state.hotModeTimeLeft > 0) { state.hotModeTimeLeft = 0; if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer); } state.autoSleepTimeLeft = sd.autoSleepTime; this.sync(); };
 
             els.contentWrapper.onclick = (e) => {
                 if (e.target === els.fakeChatInput || [1,2,3,4,5].some(i => els[`panel${i}`].style.display === 'flex')) return;
@@ -872,7 +928,7 @@
             if (this.elements.sleepBarFill) { this.elements.sleepBarFill.style.width = Math.max(0, Math.min(100, (state.autoSleepTimeLeft / sd.autoSleepTime) * 100)) + '%'; this.elements.sleepBarFill.style.backgroundColor = isMuted ? '#555555' : (state.isRecognizing ? '#00ffaa' : '#00ccff'); }
             if (this.elements.hotBarFill) this.elements.hotBarFill.style.width = Math.max(0, Math.min(100, (state.hotModeTimeLeft / sd.hotModeDuration) * 100)) + '%';
 
-            let micMsg = isMuted ? (sd.micMsg_MUTED || "🔕 マイク一時停止") : (state.isSpeaking || state.current === "BUSY" || state.isGenerating ? "🔇 中断ワード待機中" : (state.hotModeTimeLeft > 0 ? (sd.micMsg_HOTMODE || "🎤 用件をどうぞ！") : (sd.micMsg_WAITING || "👂 「{wakeWord}」を待機中...").replace("{wakeWord}", sd.wakeWord)));
+            let micMsg = isMuted ? (sd.micMsg_MUTED || "🔕停止中") : (state.isSpeaking || state.current === "BUSY" || state.isGenerating ? "🔇待機中" : (state.hotModeTimeLeft > 0 ? (sd.micMsg_HOTMODE || "🎤受付中") : (sd.micMsg_WAITING || "👂待機中")));
             let micCol = isMuted || state.isSpeaking || state.current === "BUSY" || state.isGenerating ? "#aaaaaa" : (state.hotModeTimeLeft > 0 ? "#ff4444" : "#00ccff");
             if (this.elements.micStatusContainer.textContent !== micMsg) { this.elements.micStatusContainer.textContent = micMsg; this.elements.micStatusContainer.style.textShadow = this.getSharpDoubleOutline(micCol); }
         }
@@ -928,7 +984,15 @@
             temp.querySelectorAll('pre, code').forEach(el => el.remove());
             temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
             temp.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6').forEach(el => el.appendChild(document.createTextNode('\n')));
-            return (temp.textContent || "").replace(/\n+/g, '\n').trim();
+            let text = (temp.textContent || "").replace(/\n+/g, '\n').trim();
+            
+            // 【Ver 23.00 追加】不要なテキストのフィルタリング
+            text = text.replace(/https?:\/\/[\w/:%#\$&\?\(\)~\.=\+\-]+/gi, ""); // URL
+            text = text.replace(/スプレッドシートにエクスポート|回答をコピー|他の回答案|Google 検索|共有とエクスポート/g, ""); // UIテキスト
+            text = text.replace(/\[\d+\]/g, ""); // 引用注釈
+            text = text.replace(/[a-zA-Z0-9_.-]{15,}/g, ""); // 15文字以上の連続する英数字（ファイル名やハッシュ等）
+            
+            return text.trim();
         }
         getTargetText(text) { const limit = this.app.settings.data.readChunkLength || 50; if (text.length < limit) return text; const idx = text.indexOf('\n', limit); return idx === -1 ? text : text.substring(0, idx + 1); }
         getSignature(text) { return text ? text.replace(/\s+|[。、！？.,!?"'()「」『』【】\[\]*`~_>\-]/g, '').substring(0, 40) : ""; }
@@ -1005,13 +1069,26 @@
             this.observer = new VoiceObserver(this); this.imageCache = new VoiceImageCache(this);
         }
         createBootUI() {
-            const bootBtn = document.createElement('button'); bootBtn.textContent = "▶ 実況システム起動 (Ver 22.27)";
-            Object.assign(bootBtn.style, {
-                position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999', padding: '12px 24px', backgroundColor: '#009900', color: '#fff',
-                border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)', transition: 'transform 0.2s'
+            const shield = document.createElement('div');
+            Object.assign(shield.style, {
+                position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
+                backgroundColor: 'rgba(0, 0, 0, 0.7)', zIndex: '2147483647',
+                display: 'flex', justifyContent: 'center', alignItems: 'center',
+                cursor: 'pointer', backdropFilter: 'blur(5px)', transition: 'opacity 0.3s'
             });
-            bootBtn.onmouseover = () => bootBtn.style.transform = 'scale(1.05)'; bootBtn.onmouseout = () => bootBtn.style.transform = 'scale(1)';
-            document.body.appendChild(bootBtn); bootBtn.onclick = async () => { bootBtn.remove(); await this.init(); };
+            const startText = document.createElement('div');
+            startText.textContent = "画面をクリックして実況システム(Ver 23.00)を起動";
+            Object.assign(startText.style, {
+                color: '#fff', fontSize: '24px', fontWeight: 'bold', textShadow: '0 2px 10px rgba(0,0,0,0.8)'
+            });
+            shield.appendChild(startText);
+            document.body.appendChild(shield);
+
+            shield.onclick = async () => {
+                shield.style.opacity = '0';
+                setTimeout(() => shield.remove(), 300);
+                await this.init();
+            };
         }
         async init() {
             this.settings.init(); document.body.appendChild(this.ui.build()); this.ui.enforceBounds();
