@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini Voice Control (Ver 23.00 - Perfect Reading Filter)
+// @name         Gemini Voice Control (Ver 2.301 - 認識バッファ自動消去機能追加)
 // @namespace    http://tampermonkey.net/
-// @version      23.00
-// @description  URL、UIテキスト（スプレッドシート等）、引用番号、長すぎる英数字の読み上げ・字幕除外機能を実装。
+// @version      2.301
+// @description  URL、UIテキスト（スプレッドシート等）、引用番号、長すぎる英数字の読み上げ・字幕除外機能を実装。音声認識バッファの自動消去機能を追加。
 // @author       AI Assistant
 // @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
@@ -34,7 +34,9 @@
                 baseUrl: "http://localhost:8000/",
                 bgColor: '#000032', hotModeDuration: 60, autoSleepTime: 60,
                 volume: 1.0, beepVolume: 1.5, speed: 1.1, pitch: 0.1, intonation: 1.5, lipSyncThreshold: 20,
-                readChunkLength: 50, speechEndDelay: 1.0, swapEnterKey: false, selectedSpeakerId: 61,
+                readChunkLength: 50, speechEndDelay: 1.0,
+                bufferClearDelay: 10, // 【追加】バッファ自動消去までの時間（0で無効）
+                swapEnterKey: false, selectedSpeakerId: 61,
                 pipWidth: 336, pipHeight: 600, savedPipWidth: 336, savedPipHeight: 600,
                 savedPipLeft: undefined, savedPipTop: undefined, savedChatOffset: 0,
                 heartSize: 84, heartSizeRandom: 30, heartPosRandom: 60,
@@ -283,6 +285,7 @@
         constructor(app) {
             this.app = app; this.recognition = null; this.visualTimer = null;
             this.speechBuffer = ""; this.speechTimeout = null; this.shouldSendBuffer = false; this.wasWakeWordUsed = false;
+            this.bufferClearTimer = null; // 【追加】自動消去用のタイマー
         }
         init() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -382,6 +385,10 @@
         handleRecognizedText(text, shouldSend) {
             const fakeInput = this.app.ui.elements.fakeChatInput; if (!fakeInput) return;
             if (text.length > 0) fakeInput.value += (fakeInput.value.length > 0 ? " " : "") + text;
+
+            // 【追加】既存の消去タイマーをリセット
+            if (this.bufferClearTimer) { clearTimeout(this.bufferClearTimer); this.bufferClearTimer = null; }
+
             if (shouldSend) {
                 const finalTxt = fakeInput.value.trim();
                 if (finalTxt.length > 0) {
@@ -403,6 +410,13 @@
                 } else fakeInput.value = "";
             } else if (text.length > 0) {
                 this.app.audio.playAppendTick(); fakeInput.scrollTop = fakeInput.scrollHeight;
+
+                // 【追加】設定値が0より大きい場合のみ、指定秒数後にバッファを自動消去するタイマーをセット
+                if (this.app.settings.data.bufferClearDelay > 0) {
+                    this.bufferClearTimer = setTimeout(() => {
+                        if (fakeInput) fakeInput.value = "";
+                    }, this.app.settings.data.bufferClearDelay * 1000);
+                }
             }
         }
     }
@@ -554,7 +568,7 @@
                 if (dir.includes('s')) { grip.style.bottom = '0'; grip.style.height = thickness; }
                 if (dir.includes('e')) { grip.style.right = '0'; grip.style.width = thickness; }
                 if (dir.includes('w')) { grip.style.left = '0'; grip.style.width = thickness; }
-                
+
                 if (dir === 'n' || dir === 's') { grip.style.left = thickness; grip.style.right = thickness; }
                 else if (dir === 'e' || dir === 'w') { grip.style.top = thickness; grip.style.bottom = thickness; }
                 else { grip.style.width = thickness; grip.style.height = thickness; }
@@ -584,7 +598,7 @@
             this.elements.micStatusContainer = ce('div', { fontSize: `${sd.fontSize_status}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1', display: 'flex', alignItems: 'center' });
             this.elements.systemIcon = ce('div', { fontSize: `${sd.fontSize_status}px`, color: '#000000', willChange: 'transform' }, { className: "icon-spin" });
             this.elements.statusTextValue = ce('div', { fontSize: `${sd.fontSize_status}px`, fontWeight: 'bold', color: '#000000', fontFamily: this.baseFont, lineHeight: '1' });
-            
+
             const statusRightWrap = ce('div', { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px' }, {},
                 this.elements.systemIcon,
                 this.elements.statusTextValue
@@ -669,7 +683,7 @@
                 chk: (lbl, k) => ce('div', { marginBottom: '10px' }, {}, ce('label', { display: 'flex', alignItems: 'center', fontSize: '12px', cursor: 'pointer', color: '#aaffaa', fontWeight: 'bold' }, {}, ce('input', { marginRight: '8px' }, { type: 'checkbox', checked: sd[k] === true, onchange: e => { sd[k] = e.target.checked; this.app.settings.save(); } }), lbl)),
                 sld: (lbl, k, min, max, step) => {
                     const vSp = ce('span', {}, {}, sd[k]);
-                    return ce('div', { marginBottom: '12px' }, {}, ce('div', { display: 'flex', justifyContent: 'space-between', fontSize: '12px' }, {}, ce('span', {}, {}, lbl), vSp), ce('input', { width: '100%' }, { type: 'range', min, max, step, value: sd[k], oninput: e => { sd[k] = parseFloat(e.target.value); vSp.textContent = sd[k]; }, onchange: () => { this.app.settings.save(); this.app.tts.clearCache(); } }));
+                    return ce('div', { marginBottom: '12px' }, {}, ce('div', { display: 'flex', justifyCocontent: 'space-between', fontSize: '12px' }, {}, ce('span', {}, {}, lbl), vSp), ce('input', { width: '100%' }, { type: 'range', min, max, step, value: sd[k], oninput: e => { sd[k] = parseFloat(e.target.value); vSp.textContent = sd[k]; }, onchange: () => { this.app.settings.save(); this.app.tts.clearCache(); } }));
                 },
                 num: (lbl, k, cb) => ce('div', { marginBottom: '10px' }, {}, ce('div', { fontSize: '12px', marginBottom: '4px', fontWeight: 'bold', color: '#aaffaa' }, {}, lbl), ce('input', {}, { className: 'setting-input', type: 'number', value: sd[k] || 14, onchange: e => { sd[k] = parseInt(e.target.value, 10); this.app.settings.save(); if(cb) cb(sd[k]); } })),
                 col: (lbl, k) => ce('div', { marginBottom: '12px' }, {}, ce('div', { display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }, {}, ce('span', {}, {}, lbl), ce('input', { cursor: 'pointer', width: '50px', height: '25px', border: 'none', background: 'transparent' }, { type: 'color', value: sd[k], oninput: e => { sd[k] = e.target.value; this.elements.panel.style.backgroundColor = sd[k]; this.app.settings.save(); } }))),
@@ -717,7 +731,10 @@
                 h.btn("🔊 発話調整テスト（現在の設定で再生）", e => { e.stopPropagation(); this.app.tts.enqueue("現在設定されているパラメータで発話テストを行っています。声の調子はいかがでしょうか？"); }),
                 h.hr(), h.chk("⌨️ Enterで改行 / Shift+Enterで送信", "swapEnterKey"), h.hr(), h.col("背景色", "bgColor")
             );
-            [{l:"受付モード維持時間 (秒)", k:"hotModeDuration", m:10, x:300, s:10}, {l:"オートスリープ時間 (秒)", k:"autoSleepTime", m:30, x:600, s:10}, {l:"💬 読み上げ区切り文字数 (1〜500)", k:"readChunkLength", m:1, x:500, s:1}, {l:"🎤 音声入力の確定ディレイ (秒)", k:"speechEndDelay", m:0.0, x:3.0, s:0.1}, {l:"全体音量", k:"volume", m:0, x:2, s:0.1}, {l:"打鍵/ピポ音", k:"beepVolume", m:0, x:2, s:0.1}, {l:"基本の話速", k:"speed", m:0.5, x:2, s:0.1}, {l:"基本の高音", k:"pitch", m:-0.15, x:0.15, s:0.01}, {l:"基本の抑揚", k:"intonation", m:0, x:2, s:0.1}].forEach(o => p1.appendChild(h.sld(o.l, o.k, o.m, o.x, o.s)));
+
+            // 【変更】スライダーの一覧に「バッファ自動消去 (0で無効, 秒)」を追加
+            [{l:"受付モード維持時間 (秒)", k:"hotModeDuration", m:10, x:300, s:10}, {l:"オートスリープ時間 (秒)", k:"autoSleepTime", m:30, x:600, s:10}, {l:"💬 読み上げ区切り文字数 (1〜500)", k:"readChunkLength", m:1, x:500, s:1}, {l:"🎤 音声入力の確定ディレイ (秒)", k:"speechEndDelay", m:0.0, x:3.0, s:0.1}, {l:"🗑️ バッファ自動消去 (0で無効, 秒)", k:"bufferClearDelay", m:0, x:60, s:1}, {l:"全体音量", k:"volume", m:0, x:2, s:0.1}, {l:"打鍵/ピポ音", k:"beepVolume", m:0, x:2, s:0.1}, {l:"基本の話速", k:"speed", m:0.5, x:2, s:0.1}, {l:"基本の高音", k:"pitch", m:-0.15, x:0.15, s:0.01}, {l:"基本の抑揚", k:"intonation", m:0, x:2, s:0.1}].forEach(o => p1.appendChild(h.sld(o.l, o.k, o.m, o.x, o.s)));
+
             p1.appendChild(h.hr());
             [{l:"❤ ハート基本サイズ (0でオフ)", k:"heartSize", m:0, x:200}, {l:"❤ サイズばらつき (%)", k:"heartSizeRandom", m:0, x:100}, {l:"❤ 出現位置ばらつき (px)", k:"heartPosRandom", m:0, x:200}].forEach(o => p1.appendChild(h.sld(o.l, o.k, o.m, o.x, 1)));
             this.elements.speakerListContainer = ce('div', { marginTop: '10px', padding: '10px', backgroundColor: '#222', borderRadius: '8px', fontSize: '12px' }); p1.appendChild(this.elements.speakerListContainer);
@@ -767,7 +784,7 @@
                 if (this.isResizing) {
                     let dX = e.clientX - this.resizeStartX, dY = e.clientY - this.resizeStartY;
                     let nW = this.resizeStartWidth, nH = this.resizeStartHeight, nL = this.resizeStartLeft, nT = this.resizeStartTop;
-                    
+
                     if (this.resizeDir.includes('e')) nW += dX;
                     if (this.resizeDir.includes('w')) { nW -= dX; nL += dX; }
                     if (this.resizeDir.includes('s')) nH += dY;
@@ -775,7 +792,7 @@
 
                     if (nW < 200) { if (this.resizeDir.includes('w')) nL -= (200 - nW); nW = 200; }
                     if (nH < 300) { if (this.resizeDir.includes('n')) nT -= (300 - nH); nH = 300; }
-                    
+
                     els.panel.style.width = nW + 'px'; els.panel.style.height = nH + 'px'; els.panel.style.left = nL + 'px'; els.panel.style.top = nT + 'px';
                 }
                 if (this.isSlidingChat) {
@@ -795,7 +812,7 @@
                 e.stopPropagation(); this.app.audio.playBeep(); state.autoRestart = false; if (state.isSpeaking) this.app.tts.stop();
                 if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer); this.sync();
                 els.panel.style.display = 'none';
-                
+
                 const rBtn = this.ce('button', { position: 'fixed', bottom: '20px', right: '20px', zIndex: '9999', padding: '12px 24px', backgroundColor: sd.bgColor, color: '#fff', border: '2px solid #fff', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.5)', transition: 'transform 0.2s' }, { onmouseover: () => rBtn.style.transform = 'scale(1.05)', onmouseout: () => rBtn.style.transform = 'scale(1)', onclick: () => { rBtn.remove(); els.panel.style.display = 'flex'; this.enforceBounds(); state.autoRestart = true; state.autoSleepTimeLeft = sd.autoSleepTime; this.sync(); } }, "▶ 実況システム復帰");
                 document.body.appendChild(rBtn);
             };
@@ -985,13 +1002,12 @@
             temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
             temp.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6').forEach(el => el.appendChild(document.createTextNode('\n')));
             let text = (temp.textContent || "").replace(/\n+/g, '\n').trim();
-            
-            // 【Ver 23.00 追加】不要なテキストのフィルタリング
+
             text = text.replace(/https?:\/\/[\w/:%#\$&\?\(\)~\.=\+\-]+/gi, ""); // URL
             text = text.replace(/スプレッドシートにエクスポート|回答をコピー|他の回答案|Google 検索|共有とエクスポート/g, ""); // UIテキスト
             text = text.replace(/\[\d+\]/g, ""); // 引用注釈
             text = text.replace(/[a-zA-Z0-9_.-]{15,}/g, ""); // 15文字以上の連続する英数字（ファイル名やハッシュ等）
-            
+
             return text.trim();
         }
         getTargetText(text) { const limit = this.app.settings.data.readChunkLength || 50; if (text.length < limit) return text; const idx = text.indexOf('\n', limit); return idx === -1 ? text : text.substring(0, idx + 1); }
@@ -1077,7 +1093,7 @@
                 cursor: 'pointer', backdropFilter: 'blur(5px)', transition: 'opacity 0.3s'
             });
             const startText = document.createElement('div');
-            startText.textContent = "画面をクリックして実況システム(Ver 23.00)を起動";
+            startText.textContent = "画面をクリックして実況システム(Ver 23.01)を起動";
             Object.assign(startText.style, {
                 color: '#fff', fontSize: '24px', fontWeight: 'bold', textShadow: '0 2px 10px rgba(0,0,0,0.8)'
             });
