@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini Voice Control (Ver 2.301 - 認識バッファ自動消去機能追加)
+// @name         Gemini Voice Control (Ver 2.403 - 起動時過去ログスキップ機能)
 // @namespace    http://tampermonkey.net/
-// @version      2.301
-// @description  URL、UIテキスト（スプレッドシート等）、引用番号、長すぎる英数字の読み上げ・字幕除外機能を実装。音声認識バッファの自動消去機能を追加。
+// @version      2.403
+// @description  起動時（シールドクリック時）に既存のチャットログをすべて読了済みにする処理を追加。
 // @author       AI Assistant
 // @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
@@ -35,7 +35,7 @@
                 bgColor: '#000032', hotModeDuration: 60, autoSleepTime: 60,
                 volume: 1.0, beepVolume: 1.5, speed: 1.1, pitch: 0.1, intonation: 1.5, lipSyncThreshold: 20,
                 readChunkLength: 50, speechEndDelay: 1.0,
-                bufferClearDelay: 10, // 【追加】バッファ自動消去までの時間（0で無効）
+                bufferClearDelay: 10,
                 swapEnterKey: false, selectedSpeakerId: 61,
                 pipWidth: 336, pipHeight: 600, savedPipWidth: 336, savedPipHeight: 600,
                 savedPipLeft: undefined, savedPipTop: undefined, savedChatOffset: 0,
@@ -285,7 +285,7 @@
         constructor(app) {
             this.app = app; this.recognition = null; this.visualTimer = null;
             this.speechBuffer = ""; this.speechTimeout = null; this.shouldSendBuffer = false; this.wasWakeWordUsed = false;
-            this.bufferClearTimer = null; // 【追加】自動消去用のタイマー
+            this.bufferClearTimer = null;
         }
         init() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -314,8 +314,10 @@
                         const mStop = checkMatch(final.trim(), sd.stopWord, sd.matchMode_stop);
                         if (mStop.isMatch && sd.stopWord) {
                             this.app.tts.stop();
-                            const responses = document.querySelectorAll('.model-response-text');
-                            if (responses.length > 0) responses[responses.length - 1].dataset.readLength = "999999";
+                            document.querySelectorAll('.model-response-text').forEach(el => {
+                                el.dataset.readLength = "999999";
+                                el.setAttribute('data-spoken', 'true');
+                            });
                             this.app.audio.playBeep(); this.app.ui.sync();
                         }
                     }
@@ -386,7 +388,6 @@
             const fakeInput = this.app.ui.elements.fakeChatInput; if (!fakeInput) return;
             if (text.length > 0) fakeInput.value += (fakeInput.value.length > 0 ? " " : "") + text;
 
-            // 【追加】既存の消去タイマーをリセット
             if (this.bufferClearTimer) { clearTimeout(this.bufferClearTimer); this.bufferClearTimer = null; }
 
             if (shouldSend) {
@@ -410,8 +411,6 @@
                 } else fakeInput.value = "";
             } else if (text.length > 0) {
                 this.app.audio.playAppendTick(); fakeInput.scrollTop = fakeInput.scrollHeight;
-
-                // 【追加】設定値が0より大きい場合のみ、指定秒数後にバッファを自動消去するタイマーをセット
                 if (this.app.settings.data.bufferClearDelay > 0) {
                     this.bufferClearTimer = setTimeout(() => {
                         if (fakeInput) fakeInput.value = "";
@@ -527,6 +526,10 @@
             this.elements.subtitleContainer.textContent = "";
         }
 
+        getChatWrapper() {
+            return document.querySelector('chat-window') || document.querySelector('main');
+        }
+
         build() {
             const sd = this.app.settings.data;
             const customStyles = this.ce('style', {}, {}, `
@@ -548,6 +551,11 @@
                 hr { border-color: #444; margin: 10px 0; }
                 .subtitle-bubble::before { content: ""; position: absolute; bottom: -28px; left: 60px; border-width: 28px 20px 0; border-style: solid; border-color: #333 transparent transparent transparent; display: block; width: 0; }
                 .subtitle-bubble::after { content: ""; position: absolute; bottom: -23px; left: 64px; border-width: 24px 16px 0; border-style: solid; border-color: #f8c8c9 transparent transparent transparent; display: block; width: 0; }
+                .overflow-container, chat-window, main > div:last-child {
+                    margin-left: 0 !important;
+                    margin-right: auto !important;
+                    max-width: none !important;
+                }
             `);
             document.head.appendChild(customStyles);
 
@@ -732,7 +740,6 @@
                 h.hr(), h.chk("⌨️ Enterで改行 / Shift+Enterで送信", "swapEnterKey"), h.hr(), h.col("背景色", "bgColor")
             );
 
-            // 【変更】スライダーの一覧に「バッファ自動消去 (0で無効, 秒)」を追加
             [{l:"受付モード維持時間 (秒)", k:"hotModeDuration", m:10, x:300, s:10}, {l:"オートスリープ時間 (秒)", k:"autoSleepTime", m:30, x:600, s:10}, {l:"💬 読み上げ区切り文字数 (1〜500)", k:"readChunkLength", m:1, x:500, s:1}, {l:"🎤 音声入力の確定ディレイ (秒)", k:"speechEndDelay", m:0.0, x:3.0, s:0.1}, {l:"🗑️ バッファ自動消去 (0で無効, 秒)", k:"bufferClearDelay", m:0, x:60, s:1}, {l:"全体音量", k:"volume", m:0, x:2, s:0.1}, {l:"打鍵/ピポ音", k:"beepVolume", m:0, x:2, s:0.1}, {l:"基本の話速", k:"speed", m:0.5, x:2, s:0.1}, {l:"基本の高音", k:"pitch", m:-0.15, x:0.15, s:0.01}, {l:"基本の抑揚", k:"intonation", m:0, x:2, s:0.1}].forEach(o => p1.appendChild(h.sld(o.l, o.k, o.m, o.x, o.s)));
 
             p1.appendChild(h.hr());
@@ -797,8 +804,11 @@
                 }
                 if (this.isSlidingChat) {
                     this.currentChatOffset = (sd.savedChatOffset || 0) + (e.clientX - this.slideStartX);
-                    const mainEl = document.querySelector('chat-window') || document.querySelector('main > div:last-child') || document.querySelector('main');
-                    if (mainEl) { mainEl.style.transform = `translateX(${this.currentChatOffset}px)`; mainEl.style.transition = 'none'; }
+                    const target = this.getChatWrapper();
+                    if (target) {
+                        target.style.transform = `translateX(${this.currentChatOffset}px)`;
+                        target.style.transition = 'none';
+                    }
                 }
             });
 
@@ -847,20 +857,35 @@
 
             els.contentWrapper.onclick = (e) => {
                 if (e.target === els.fakeChatInput || [1,2,3,4,5].some(i => els[`panel${i}`].style.display === 'flex')) return;
+
+                const messages = document.querySelectorAll('message-content, .model-response-text, user-query');
+                if (messages.length > 0) {
+                    messages[messages.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+                } else {
+                    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                }
+
                 if (sd.heartSize > 0) {
                     const h = this.ce('div', { fontSize: (sd.heartSize * (1 + (Math.random() - 0.5) * 2 * (sd.heartSizeRandom / 100))) + 'px', left: (e.clientX + (Math.random() - 0.5) * sd.heartPosRandom) + 'px', top: (e.clientY + (Math.random() - 0.5) * sd.heartPosRandom) + 'px' }, { className: 'heart-effect' }, '❤');
                     document.body.appendChild(h); setTimeout(() => h.remove(), 1200);
                 }
                 this.app.audio.playTapSound(); state.autoSleepTimeLeft = sd.autoSleepTime;
                 const pRnd = (bK) => { const ts = [sd[`${bK}_1`], sd[`${bK}_2`], sd[`${bK}_3`]].filter(t => t && t.trim()); if(ts.length > 0) this.app.tts.enqueue(ts[Math.floor(Math.random() * ts.length)], bK); };
+
                 if (!state.autoRestart) {
                     state.autoRestart = true; if (this.app.audio.ctx && this.app.audio.ctx.state === 'suspended') this.app.audio.ctx.resume();
                     this.sync(); this.triggerReaction("REACTION_WAKEUP"); setTimeout(() => { if (sd.resumeMessage) this.app.tts.enqueue(sd.resumeMessage, "resumeMessage"); }, 1000);
                 } else if (state.isSpeaking || state.current === "BUSY" || state.isGenerating) {
                     if (state.isSpeaking) { this.app.tts.stop(); this.triggerReaction("REACTION_SAD"); pRnd("reactionSpeechSad"); }
                     else { this.triggerReaction("REACTION_ANGRY"); pRnd("reactionSpeechAngry"); }
-                    const rs = document.querySelectorAll('.model-response-text'); if (rs.length > 0) rs[rs.length - 1].dataset.readLength = "999999";
-                } else { this.triggerReaction("REACTION_SURPRISED"); pRnd("reactionSpeechSurprised"); }
+
+                    document.querySelectorAll('.model-response-text').forEach(el => {
+                        el.dataset.readLength = "999999";
+                        el.setAttribute('data-spoken', 'true');
+                    });
+                } else {
+                    this.triggerReaction("REACTION_SURPRISED"); pRnd("reactionSpeechSurprised");
+                }
                 if (state.hotModeTimeLeft > 0) { state.hotModeTimeLeft = 0; if (this.app.speech.visualTimer) clearInterval(this.app.speech.visualTimer); this.sync(); }
             };
         }
@@ -919,7 +944,15 @@
 
         sync(forceMessage = null, isError = false) {
             const state = this.app.state; const sd = this.app.settings.data; const isMuted = (!state.autoRestart);
-            if (!this.isSlidingChat && sd.savedChatOffset) { const mainEl = document.querySelector('chat-window') || document.querySelector('main > div:last-child') || document.querySelector('main'); if (mainEl) { mainEl.style.transform = `translateX(${sd.savedChatOffset}px)`; mainEl.style.transition = 'none'; } }
+
+            if (!this.isSlidingChat && sd.savedChatOffset !== undefined) {
+                const target = this.getChatWrapper();
+                if (target && target.style.transform !== `translateX(${sd.savedChatOffset}px)`) {
+                    target.style.transform = `translateX(${sd.savedChatOffset}px)`;
+                    target.style.transition = 'none';
+                }
+            }
+
             if (this.app.speech.recognition) {
                 if (isMuted && state.isRecognizing) { try { this.app.speech.recognition.stop(); } catch(e){} }
                 else if (!isMuted && !state.isRecognizing && state.autoRestart) setTimeout(() => { if (!state.isRecognizing && state.autoRestart) try { this.app.speech.recognition.start(); } catch(e){} }, 300);
@@ -1003,10 +1036,10 @@
             temp.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6').forEach(el => el.appendChild(document.createTextNode('\n')));
             let text = (temp.textContent || "").replace(/\n+/g, '\n').trim();
 
-            text = text.replace(/https?:\/\/[\w/:%#\$&\?\(\)~\.=\+\-]+/gi, ""); // URL
-            text = text.replace(/スプレッドシートにエクスポート|回答をコピー|他の回答案|Google 検索|共有とエクスポート/g, ""); // UIテキスト
-            text = text.replace(/\[\d+\]/g, ""); // 引用注釈
-            text = text.replace(/[a-zA-Z0-9_.-]{15,}/g, ""); // 15文字以上の連続する英数字（ファイル名やハッシュ等）
+            text = text.replace(/https?:\/\/[\w/:%#\$&\?\(\)~\.=\+\-]+/gi, "");
+            text = text.replace(/スプレッドシートにエクスポート|回答をコピー|他の回答案|Google 検索|共有とエクスポート/g, "");
+            text = text.replace(/\[\d+\]/g, "");
+            text = text.replace(/[a-zA-Z0-9_.-]{15,}/g, "");
 
             return text.trim();
         }
@@ -1064,6 +1097,15 @@
                     }
                     ui.sync();
                 }
+
+                const offset = sd.savedChatOffset || 0;
+                if (offset !== 0 && !ui.isSlidingChat) {
+                    const target = ui.getChatWrapper();
+                    if (target && target.style.transform !== `translateX(${offset}px)`) {
+                        target.style.transform = `translateX(${offset}px)`;
+                        target.style.transition = 'none';
+                    }
+                }
             };
             const observer = new MutationObserver(() => {
                 const now = Date.now(); const stopButton = document.querySelector('button[aria-label*="停止"], .generating-text, [purpose="r-stop-button"]');
@@ -1093,7 +1135,7 @@
                 cursor: 'pointer', backdropFilter: 'blur(5px)', transition: 'opacity 0.3s'
             });
             const startText = document.createElement('div');
-            startText.textContent = "画面をクリックして実況システム(Ver 23.01)を起動";
+            startText.textContent = "画面をクリックして実況システム(Ver 2.403)を起動";
             Object.assign(startText.style, {
                 color: '#fff', fontSize: '24px', fontWeight: 'bold', textShadow: '0 2px 10px rgba(0,0,0,0.8)'
             });
@@ -1107,6 +1149,14 @@
             };
         }
         async init() {
+            // 【機能追加】起動時に既存のチャットをすべて読了済みにする（過去ログの暴発防止）
+            document.querySelectorAll('.model-response-text').forEach(el => {
+                el.setAttribute('data-spoken', 'true');
+                el.dataset.readLength = "999999";
+                const cleanTxt = this.observer.getCleanTextFast(el);
+                if (cleanTxt) this.state.spokenSignatures.add(this.observer.getSignature(cleanTxt));
+            });
+
             this.settings.init(); document.body.appendChild(this.ui.build()); this.ui.enforceBounds();
             this.speech.init(); this.ui.renderSpeakerList(); try { await this.audio.setupMic(); } catch (e) {}
             this.tts.preloadCache(); await this.imageCache.preloadAll();
